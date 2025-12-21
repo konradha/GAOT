@@ -430,3 +430,170 @@ def create_data_splits(data: torch.Tensor, train_ratio: float = 0.8,
         'val': data[train_end:val_end], 
         'test': data[val_end:]
     }
+
+class DynamicPairDatasetWithMask(Dataset):
+    def __init__(self, u_data: torch.Tensor, c_data: Optional[torch.Tensor],
+                 t_values: torch.Tensor, metadata, max_time_diff: int = 14, time_step: int = 2,
+                 stepper_mode: str = "output", stats: Optional[dict] = None,
+                 use_time_norm: bool = True, dataset_name: Optional[str] = None,
+                 x_data: Optional[torch.Tensor] = None, mask_data: Optional[torch.Tensor] = None,
+                 is_variable_coords: bool = False):
+        self.dataset_name = dataset_name
+        self.u_data = u_data
+        self.c_data = c_data
+        self.x_data = x_data
+        self.mask_data = mask_data
+        self.t_values = t_values
+        self.metadata = metadata
+        self.stepper_mode = stepper_mode
+        self.stats = stats
+        self.use_time_norm = use_time_norm
+        self.is_variable_coords = is_variable_coords
+
+        self.num_samples, self.num_timesteps, self.num_nodes, self.num_vars = u_data.shape
+
+        self.num_timesteps = min(self.num_timesteps-1, max_time_diff)
+        self.t_values = self.t_values[:self.num_timesteps + 1]
+
+        self._generate_time_pairs(self.num_timesteps, time_step)
+
+    def _generate_time_pairs(self, num_timesteps: int, time_step: int):
+        self.t_in_indices = []
+        self.t_out_indices = []
+
+        for lag in range(time_step, num_timesteps + 1, time_step):
+            for i in range(0, num_timesteps - lag + 1, time_step):
+                t_in_idx = i
+                t_out_idx = i + lag
+                self.t_in_indices.append(t_in_idx)
+                self.t_out_indices.append(t_out_idx)
+
+        self.t_in_indices = np.array(self.t_in_indices)
+        self.t_out_indices = np.array(self.t_out_indices)
+
+        self.time_diffs = self.t_values[self.t_out_indices] - self.t_values[self.t_in_indices]
+
+        if self.use_time_norm and self.stats is not None:
+            self.start_times = self.t_values[self.t_in_indices]
+            self.start_times_norm = ((self.start_times - self.stats["start_time"]["mean"]) /
+                                   self.stats["start_time"]["std"])
+            self.time_diffs_norm = ((self.time_diffs - self.stats["time_diffs"]["mean"]) /
+                                  self.stats["time_diffs"]["std"])
+        else:
+            self.start_times_norm = self.t_values[self.t_in_indices]
+            self.time_diffs_norm = self.time_diffs
+
+        self._prepare_time_features()
+
+    def __len__(self):
+        return self.num_samples * len(self.t_in_indices)
+
+    def _prepare_time_features(self):
+        self.start_time_expanded = self.start_times_norm.unsqueeze(1).expand(-1, self.num_nodes)
+        self.time_diff_expanded = self.time_diffs_norm.unsqueeze(1).expand(-1, self.num_nodes)
+        self.start_time_expanded = self.start_time_expanded[..., None]
+        self.time_diff_expanded = self.time_diff_expanded[..., None]
+
+    def __getitem__(self, idx):
+        sample_idx = idx // len(self.t_in_indices)
+        pair_idx = idx % len(self.t_in_indices)
+
+        t_in_idx = self.t_in_indices[pair_idx]
+        t_out_idx = self.t_out_indices[pair_idx]
+
+        u_in = self.u_data[sample_idx, t_in_idx]
+        u_out = self.u_data[sample_idx, t_out_idx]
+
+        if self.mask_data is not None:
+            mask_in = self.mask_data[sample_idx, t_in_idx]
+            mask_out = self.mask_data[sample_idx, t_out_idx]
+            mask_combined = mask_in & mask_out
+        else:
+            mask_combined = None
+
+        if self.stats is not None:
+            u_in_norm = (u_in - self.stats["u"]["mean"]) / self.stats["u"]["std"]
+        else:
+            u_in_norm = u_in
+
+        if self.c_data is not None:
+            c_in = self.c_data[sample_idx, t_in_idx]
+            if self.stats is not None and "c" in self.stats:
+                c_in_norm = (c_in - self.stats["c"]["mean"]) / self.stats["c"]["std"]
+            else:
+                c_in_norm = c_in
+        else:
+            c_in_norm = None
+
+        input_features = [u_in_norm]
+        if c_in_norm is not None:
+            input_features.append(c_in_norm)
+
+        start_time_feat = self.start_time_expanded[pair_idx]
+        time_diff_feat = self.time_diff_expanded[pair_idx]
+        input_features.extend([start_time_feat, time_diff_feat])
+
+        input_data = torch.cat(input_features, dim=-1)
+
+        if self.stepper_mode == "output":
+            target = (u_out - self.stats["u"]["mean"]) / self.stats["u"]["std"]
+        elif self.stepper_mode == "residual":
+            if self.stats is not None:
+                res_mean = self.stats["res"]["mean"]
+                res_std = self.stats["res"]["std"]
+                target = (u_out - u_in - res_mean) / res_std
+            else:
+                target = u_out - u_in
+        elif self.stepper_mode == "time_der":
+            time_diff_actual = self.time_diffs[pair_idx]
+            u_time_der = (u_out - u_in) / time_diff_actual
+            if self.stats is not None:
+                der_mean = self.stats["der"]["mean"]
+                der_std = self.stats["der"]["std"]
+                target = (u_time_der - der_mean) / der_std
+            else:
+                target = u_time_der
+        else:
+            raise ValueError(f"Unsupported stepper_mode: {self.stepper_mode}")
+
+        if self.is_variable_coords and self.x_data is not None:
+            x_coord = self.x_data[sample_idx, t_in_idx]
+            if mask_combined is not None:
+                return input_data, target, x_coord, mask_combined
+            else:
+                return input_data, target, x_coord
+        else:
+            if mask_combined is not None:
+                return input_data, target, mask_combined
+            else:
+                return input_data, target
+
+
+def collate_sequential_batch_with_mask(batch):
+    if len(batch[0]) == 2:
+        input_list, target_list = zip(*batch)
+        inputs = torch.stack(input_list)
+        targets = torch.stack(target_list)
+        return inputs, targets
+    elif len(batch[0]) == 3:
+        if batch[0][2].dtype == torch.bool:
+            input_list, target_list, mask_list = zip(*batch)
+            inputs = torch.stack(input_list)
+            targets = torch.stack(target_list)
+            masks = torch.stack(mask_list)
+            return inputs, targets, masks
+        else:
+            input_list, target_list, coord_list = zip(*batch)
+            inputs = torch.stack(input_list)
+            targets = torch.stack(target_list)
+            coords = torch.stack(coord_list)
+            return inputs, targets, coords
+    elif len(batch[0]) == 4:
+        input_list, target_list, coord_list, mask_list = zip(*batch)
+        inputs = torch.stack(input_list)
+        targets = torch.stack(target_list)
+        coords = torch.stack(coord_list)
+        masks = torch.stack(mask_list)
+        return inputs, targets, coords, masks
+    else:
+        raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
