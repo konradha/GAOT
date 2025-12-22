@@ -5,16 +5,17 @@ import os
 import time
 import argparse
 
-import toml 
+import toml
 import json
 from omegaconf import OmegaConf
-from multiprocessing import Pool,Process
+from multiprocessing import Pool, Process
 import subprocess
 import platform
 import torch.distributed as dist
 
 from src.trainer.static_trainer import StaticTrainer
 from src.trainer.sequential_trainer import SequentialTrainer
+
 
 class FileParser:
     def __init__(self, filename):
@@ -25,10 +26,11 @@ class FileParser:
             with open(filename) as f:
                 self.kwargs = OmegaConf.load(f)
         else:
-            raise NotImplementedError(f"File type {filename} not supported, currently only toml and json are supported.")
-        
-    def add_argument(self, *args, **kwargs):
+            raise NotImplementedError(
+                f"File type {filename} not supported, currently only toml and json are supported."
+            )
 
+    def add_argument(self, *args, **kwargs):
         for arg in args:
             if arg.startswith("--"):
                 arg = arg[2:]
@@ -37,21 +39,34 @@ class FileParser:
                     self.kwargs[arg] = False
                 else:
                     self.kwargs[arg] = kwargs.get("default", None)
-   
+
     def parse_args(self):
         return argparse.Namespace(**self.kwargs)
+
 
 def parse_cmd():
     parser = argparse.ArgumentParser()
     return [parse_args(parser)], True
 
+
 def parse_files():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-c", "--config", type=str, default=None, help="config file path")
+    parser.add_argument(
+        "-c", "--config", type=str, default=None, help="config file path"
+    )
     parser.add_argument("-f", "--folder", type=str, default=None, help="folder path")
-    parser.add_argument("--debug", action="store_true", help="debug mode, to dispalce multiprocessing")
-    parser.add_argument("--num_works_per_device", type=int, default=10, help="number of works per device")
-    parser.add_argument("--visible_devices", nargs='*', type=int, default=None, help="visible devices")
+    parser.add_argument(
+        "--debug", action="store_true", help="debug mode, to dispalce multiprocessing"
+    )
+    parser.add_argument(
+        "--num_works_per_device",
+        type=int,
+        default=10,
+        help="number of works per device",
+    )
+    parser.add_argument(
+        "--visible_devices", nargs="*", type=int, default=None, help="visible devices"
+    )
     args = parser.parse_args()
     assert args.config or args.folder, "Please specify --config or --folder"
     if args.visible_devices is not None:
@@ -66,6 +81,7 @@ def parse_files():
                     args.arg_files.append(os.path.join(root, name))
     return args
 
+
 def prepare_arg(arg):
     # make sure all paths are exist
     basepath = os.path.dirname(os.path.abspath(__file__))
@@ -77,29 +93,30 @@ def prepare_arg(arg):
         # make sure the path directory exist
         if not os.path.exists(_dirpath):
             os.makedirs(_dirpath)
-        # turn the relative path to abs path 
+        # turn the relative path to abs path
         arg.path[_path] = _abspath
     arg.datarow = vars(arg).copy()
-    arg.datarow['nbytes'] = -1
-    arg.datarow['nparams'] = -1
-    arg.datarow['p2r edges'] = -1
-    arg.datarow['r2r edges'] = -1
-    arg.datarow['r2p edges'] = -1
-    arg.datarow['training time'] = np.nan
-    arg.datarow['inference time'] = np.nan
-    arg.datarow['time']    = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-    arg.datarow['relative error (direct)'] = np.nan
-    arg.datarow['relative error (auto2)'] = np.nan
-    arg.datarow['relative error (auto4)'] = np.nan
-    
+    arg.datarow["nbytes"] = -1
+    arg.datarow["nparams"] = -1
+    arg.datarow["p2r edges"] = -1
+    arg.datarow["r2r edges"] = -1
+    arg.datarow["r2p edges"] = -1
+    arg.datarow["training time"] = np.nan
+    arg.datarow["inference time"] = np.nan
+    arg.datarow["time"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    arg.datarow["relative error (direct)"] = np.nan
+    arg.datarow["relative error (auto2)"] = np.nan
+    arg.datarow["relative error (auto4)"] = np.nan
+
     return arg
+
 
 def run_arg(arg):
     arg = prepare_arg(arg)
 
     Trainer = {
-        "static": StaticTrainer,  
-        "sequential": SequentialTrainer,  
+        "static": StaticTrainer,
+        "sequential": SequentialTrainer,
     }[arg.setup["trainer_name"]]
     t = Trainer(arg)
     if arg.setup["train"]:
@@ -120,14 +137,18 @@ def run_arg(arg):
 
     return t
 
+
 def run_arg_file_popen_handle(arg_file):
     command = f"python main.py -c {arg_file}"
-    process = subprocess.Popen(command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    process = subprocess.Popen(
+        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
     out, err = process.communicate()
     if process.returncode == 0:
         print(f"Job {arg_file}: {out.decode('utf-8').strip()}")
     else:
         print(f"Job {arg_file} error: {err.decode('utf-8').strip()}")
+
 
 def run_arg_files(arg_files, is_debug, num_works_per_device=3):
     if len(arg_files) == 1:
@@ -148,7 +169,7 @@ def run_arg_files(arg_files, is_debug, num_works_per_device=3):
             p.join()
     elif platform.system() == "Linux":
         num_devices = torch.cuda.device_count()
-        processes = {"cpu":[]}
+        processes = {"cpu": []}
         for i in range(num_devices):
             processes[f"cuda:{i}"] = []
         for arg_file in arg_files:
@@ -159,26 +180,27 @@ def run_arg_files(arg_files, is_debug, num_works_per_device=3):
                 processes[f"cuda:{device_id}"].append(p)
             else:
                 processes["cpu"].append(p)
-        
-        max_jobs = max([len(v) for k,v in processes.items()])
-        max_runs = (max_jobs + num_works_per_device - 1)  // num_works_per_device
+
+        max_jobs = max([len(v) for k, v in processes.items()])
+        max_runs = (max_jobs + num_works_per_device - 1) // num_works_per_device
         for i in range(max_runs):
             for k, v in processes.items():
-                for p in v[i*num_works_per_device:(i+1)*num_works_per_device]:
+                for p in v[i * num_works_per_device : (i + 1) * num_works_per_device]:
                     p.start()
             for k, v in processes.items():
-                for p in v[i*num_works_per_device:(i+1)*num_works_per_device]:
+                for p in v[i * num_works_per_device : (i + 1) * num_works_per_device]:
                     p.join()
     else:
         raise NotImplementedError(f"Platform {platform.system()} not supported")
 
+
 def init_distributed_mode(arg):
-    if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
-        arg.setup.rank = int(os.environ['RANK'])
-        arg.setup.world_size = int(os.environ['WORLD_SIZE'])
-        arg.setup.local_rank = int(os.environ.get('LOCAL_RANK', 0))
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        arg.setup.rank = int(os.environ["RANK"])
+        arg.setup.world_size = int(os.environ["WORLD_SIZE"])
+        arg.setup.local_rank = int(os.environ.get("LOCAL_RANK", 0))
     else:
-        print('Not using distributed mode')
+        print("Not using distributed mode")
         arg.setup.distributed = False
         arg.setup.rank = 0
         arg.setup.world_size = 1
@@ -187,12 +209,13 @@ def init_distributed_mode(arg):
 
     dist.init_process_group(
         backend=arg.setup.backend,
-        init_method='env://',
+        init_method="env://",
         world_size=arg.setup.world_size,
-        rank=arg.setup.rank
+        rank=arg.setup.rank,
     )
     dist.barrier()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     config = parse_files()
     run_arg_files(config.arg_files, config.debug, config.num_works_per_device)

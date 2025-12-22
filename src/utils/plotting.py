@@ -1,6 +1,7 @@
 """
 Plotting utilities for GAOT results visualization.
 """
+
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional, List, Union, Tuple
@@ -12,35 +13,36 @@ import matplotlib
 # Plotting settings
 ########################################################
 # Dark colors
-C_BLACK = '#000000'
-C_WHITE = '#ffffff'
-C_BLUE = '#093691'
-C_RED = '#911b09'
-C_BLACK_BLUEISH = '#011745'
-C_BLACK_REDDISH = '#380801'
-C_WHITE_BLUEISH = '#dce5f5'
-C_WHITE_REDDISH = '#f5dcdc'
+C_BLACK = "#000000"
+C_WHITE = "#ffffff"
+C_BLUE = "#093691"
+C_RED = "#911b09"
+C_BLACK_BLUEISH = "#011745"
+C_BLACK_REDDISH = "#380801"
+C_WHITE_BLUEISH = "#dce5f5"
+C_WHITE_REDDISH = "#f5dcdc"
 # Bright colors
-C_BRIGHT_PURPLE = '#7f00ff'   
-C_BRIGHT_PINK   = '#ff00ff'   
-C_BRIGHT_ORANGE = '#ff7700'   
-C_BRIGHT_YELLOW = '#ffdd00'   
-C_BRIGHT_GREEN  = '#00ee00'   
-C_BRIGHT_CYAN   = '#00ffff'   
-C_BRIGHT_BLUE   = '#0f00ff'   
+C_BRIGHT_PURPLE = "#7f00ff"
+C_BRIGHT_PINK = "#ff00ff"
+C_BRIGHT_ORANGE = "#ff7700"
+C_BRIGHT_YELLOW = "#ffdd00"
+C_BRIGHT_GREEN = "#00ee00"
+C_BRIGHT_CYAN = "#00ffff"
+C_BRIGHT_BLUE = "#0f00ff"
 CMAP_BWR = matplotlib.colors.LinearSegmentedColormap.from_list(
-  'blue_white_red',
-  [C_BLACK_BLUEISH, C_BLUE, C_WHITE, C_RED, C_BLACK_REDDISH],
-  N=200,
+    "blue_white_red",
+    [C_BLACK_BLUEISH, C_BLUE, C_WHITE, C_RED, C_BLACK_REDDISH],
+    N=200,
 )
 CMAP_WRB = matplotlib.colors.LinearSegmentedColormap.from_list(
-  'white_red_black',
-  [C_WHITE, C_RED, C_BLACK],
-  N=200,
+    "white_red_black",
+    [C_WHITE, C_RED, C_BLACK],
+    N=200,
 )
 # Scatter settings
-SCATTER_SETTINGS = dict(marker='s', s=1, alpha=1, linewidth=0)
-HATCH_SETTINGS = dict(facecolor='#b8b8b8', edgecolor='#4f4f4f', linewidth=.0)
+SCATTER_SETTINGS = dict(marker="s", s=1, alpha=1, linewidth=0)
+HATCH_SETTINGS = dict(facecolor="#b8b8b8", edgecolor="#4f4f4f", linewidth=0.0)
+
 
 ########################################################
 # Plotting functions
@@ -55,7 +57,7 @@ def plot_estimates(
     names: Optional[List[str]] = None,
     domain: Tuple[List[float], List[float]] = ([-1, -1], [1, 1]),
     colorbar_type: str = "light",
-    show_error: bool = True
+    show_error: bool = True,
 ) -> plt.Figure:
     """
     Plots input data, ground-truth, model predictions, and optionally absolute errors over a 2D domain.
@@ -67,7 +69,7 @@ def plot_estimates(
     4) Absolute error (|ground-truth - prediction|) - optional based on show_error parameter.
 
     A horizontal colorbar is provided for each column, showing the data range used for coloring.
-    
+
     Parameters
     ----------
     u_inp : np.ndarray
@@ -87,9 +89,9 @@ def plot_estimates(
         The (x, y) coordinates for the output/ground-truth grid, shape (N_out, 2).
         Used for the scatter plots of `u_gtr`, `u_prd`, and their absolute error.
     symmetric : bool or list of bool, optional
-        Whether to use a symmetric color scale (colormap) for each variable. 
-        If True, the color limits are set to [-vmax, +vmax], where vmax is 
-        the maximum absolute value across data samples for that variable. 
+        Whether to use a symmetric color scale (colormap) for each variable.
+        If True, the color limits are set to [-vmax, +vmax], where vmax is
+        the maximum absolute value across data samples for that variable.
         If a list of booleans is provided, each element corresponds to one variable.
     names : list of str, optional
         A list of variable names (of length n_vars) used as labels on the vertical axis.
@@ -139,10 +141,10 @@ def plot_estimates(
     >>> fig.show()
     """
     _HEIGHT_PER_ROW = 1.9
-    _HEIGHT_MARGIN = .2
+    _HEIGHT_MARGIN = 0.2
     _SCATTER_SETTINGS = SCATTER_SETTINGS.copy()
-    _SCATTER_SETTINGS['s'] = _SCATTER_SETTINGS['s'] * .4 * _HEIGHT_PER_ROW
-    _SCATTER_SETTINGS['s'] = _SCATTER_SETTINGS['s'] * 128 / (x_inp.shape[0] ** .5)
+    _SCATTER_SETTINGS["s"] = _SCATTER_SETTINGS["s"] * 0.4 * _HEIGHT_PER_ROW
+    _SCATTER_SETTINGS["s"] = _SCATTER_SETTINGS["s"] * 128 / (x_inp.shape[0] ** 0.5)
 
     n_vars = u_gtr.shape[-1]
     if isinstance(symmetric, bool):
@@ -151,7 +153,7 @@ def plot_estimates(
     # Calculate number of columns and adjust figsize accordingly
     n_cols = 4 if show_error else 3
     base_width = 8.6  # Original width for 4 columns
-    figsize = (base_width * n_cols / 4.0, _HEIGHT_PER_ROW*n_vars+_HEIGHT_MARGIN)
+    figsize = (base_width * n_cols / 4.0, _HEIGHT_PER_ROW * n_vars + _HEIGHT_MARGIN)
     fig = plt.figure(figsize=figsize)
     g_fig = fig.add_gridspec(
         nrows=n_vars,
@@ -173,11 +175,11 @@ def plot_estimates(
     axs_cb_err = []
     for ivar in range(n_vars):
         g = figs[ivar].add_gridspec(
-        nrows=2,
-        ncols=n_cols,
-        height_ratios=[1, .05],
-        wspace=0.20,
-        hspace=0.05,
+            nrows=2,
+            ncols=n_cols,
+            height_ratios=[1, 0.05],
+            wspace=0.20,
+            hspace=0.05,
         )
         axs_inp.append(figs[ivar].add_subplot(g[0, 0]))
         axs_gtr.append(figs[ivar].add_subplot(g[0, 1]))
@@ -186,7 +188,7 @@ def plot_estimates(
             axs_err.append(figs[ivar].add_subplot(g[0, 3]))
         else:
             axs_err.append(None)  # Placeholder to maintain indexing
-        
+
         axs_cb_inp.append(figs[ivar].add_subplot(g[1, 0]))
         if show_error:
             axs_cb_out.append(figs[ivar].add_subplot(g[1, 1:3]))
@@ -205,12 +207,14 @@ def plot_estimates(
         ax.set_xlim([domain[0][0], domain[1][0]])
         ax.set_ylim([domain[0][1], domain[1][1]])
         ax.fill_between(
-        x=[domain[0][0], domain[1][0]], y1=domain[0][1], y2=domain[1][1],
-        **HATCH_SETTINGS,
+            x=[domain[0][0], domain[1][0]],
+            y1=domain[0][1],
+            y2=domain[1][1],
+            **HATCH_SETTINGS,
         )
 
     # Get prediction error
-    u_err = (u_gtr - u_prd)
+    u_err = u_gtr - u_prd
 
     # Choose colormap based on colorbar_type
     if colorbar_type == "light":
@@ -236,64 +240,64 @@ def plot_estimates(
 
         # Plot input
         h = axs_inp[ivar].scatter(
-        x=x_inp[:, 0],
-        y=x_inp[:, 1],
-        c=u_inp[:, ivar],
-        cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
-        vmax=(abs_vmax_inp if symmetric[ivar] else vmax_inp),
-        vmin=(-abs_vmax_inp if symmetric[ivar] else vmin_inp),
-        **_SCATTER_SETTINGS,
+            x=x_inp[:, 0],
+            y=x_inp[:, 1],
+            c=u_inp[:, ivar],
+            cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
+            vmax=(abs_vmax_inp if symmetric[ivar] else vmax_inp),
+            vmin=(-abs_vmax_inp if symmetric[ivar] else vmin_inp),
+            **_SCATTER_SETTINGS,
         )
-        cb = plt.colorbar(h, cax=axs_cb_inp[ivar], orientation='horizontal')
+        cb = plt.colorbar(h, cax=axs_cb_inp[ivar], orientation="horizontal")
         cb.formatter.set_powerlimits((-0, 0))
         # Plot ground truth
         h = axs_gtr[ivar].scatter(
-        x=x_out[:, 0],
-        y=x_out[:, 1],
-        c=u_gtr[:, ivar],
-        cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
-        vmax=(abs_vmax_out if symmetric[ivar] else vmax_out),
-        vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
-        **_SCATTER_SETTINGS,
+            x=x_out[:, 0],
+            y=x_out[:, 1],
+            c=u_gtr[:, ivar],
+            cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
+            vmax=(abs_vmax_out if symmetric[ivar] else vmax_out),
+            vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
+            **_SCATTER_SETTINGS,
         )
         # Plot estimate
         h = axs_prd[ivar].scatter(
-        x=x_out[:, 0],
-        y=x_out[:, 1],
-        c=u_prd[:, ivar],
-        cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
-        vmax=(abs_vmax_out if symmetric[ivar] else vmax_out),
-        vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
-        **_SCATTER_SETTINGS,
+            x=x_out[:, 0],
+            y=x_out[:, 1],
+            c=u_prd[:, ivar],
+            cmap=(cmap_symmetric if symmetric[ivar] else cmap_asymmetric),
+            vmax=(abs_vmax_out if symmetric[ivar] else vmax_out),
+            vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
+            **_SCATTER_SETTINGS,
         )
-        cb = plt.colorbar(h, cax=axs_cb_out[ivar], orientation='horizontal')
+        cb = plt.colorbar(h, cax=axs_cb_out[ivar], orientation="horizontal")
         cb.formatter.set_powerlimits((-0, 0))
 
         # Plot error (only if show_error is True)
         if show_error:
             h = axs_err[ivar].scatter(
-            x=x_out[:, 0],
-            y=x_out[:, 1],
-            c=np.abs(u_err[:, ivar]),
-            cmap=cmap_asymmetric,
-            vmin=0,
-            vmax=np.max(np.abs(u_err[:, ivar])),
-            **_SCATTER_SETTINGS,
+                x=x_out[:, 0],
+                y=x_out[:, 1],
+                c=np.abs(u_err[:, ivar]),
+                cmap=cmap_asymmetric,
+                vmin=0,
+                vmax=np.max(np.abs(u_err[:, ivar])),
+                **_SCATTER_SETTINGS,
             )
-            cb = plt.colorbar(h, cax=axs_cb_err[ivar], orientation='horizontal')
+            cb = plt.colorbar(h, cax=axs_cb_err[ivar], orientation="horizontal")
             cb.formatter.set_powerlimits((-0, 0))
 
     # Set titles
-    axs_inp[0].set(title='Input')
-    axs_gtr[0].set(title='Ground-truth')
-    axs_prd[0].set(title='Model estimate')
+    axs_inp[0].set(title="Input")
+    axs_gtr[0].set(title="Ground-truth")
+    axs_prd[0].set(title="Model estimate")
     if show_error:
-        axs_err[0].set(title='Absolute error')
+        axs_err[0].set(title="Absolute error")
 
     # Set variable names
     for ivar in range(n_vars):
-        label = names[ivar] if names else f'Variable {ivar:02d}'
-        axs_inp[ivar].set(ylabel=label);
+        label = names[ivar] if names else f"Variable {ivar:02d}"
+        axs_inp[ivar].set(ylabel=label)
 
     # Rotate colorbar tick labels
     cb_axes = [axs_cb_inp, axs_cb_out]
@@ -307,19 +311,24 @@ def plot_estimates(
     return fig
 
 
-def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarray,
-                               coords: np.ndarray, save_path: str,
-                               input_data: np.ndarray = None,
-                               time_values: List[float] = None,
-                               interval: int = 500, symmetric: Union[bool, List[bool]] = True,
-                               domain: Tuple[List[float], List[float]] = None,
-                               names: List[str] = None,
-                               colorbar_type: str = "light",
-                               show_error: bool = True) -> None:
+def create_sequential_animation(
+    gt_sequence: np.ndarray,
+    pred_sequence: np.ndarray,
+    coords: np.ndarray,
+    save_path: str,
+    input_data: np.ndarray = None,
+    time_values: List[float] = None,
+    interval: int = 500,
+    symmetric: Union[bool, List[bool]] = True,
+    domain: Tuple[List[float], List[float]] = None,
+    names: List[str] = None,
+    colorbar_type: str = "light",
+    show_error: bool = True,
+) -> None:
     """
     Create animation comparing input, ground truth and prediction sequences.
     Uses 3 or 4-column layout identical to plot_estimates: Input | Ground Truth | Prediction | [Error]
-    
+
     Args:
         gt_sequence: Ground truth sequence [n_timesteps, n_points, n_channels]
         pred_sequence: Prediction sequence [n_timesteps, n_points, n_channels]
@@ -339,33 +348,33 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
     except ImportError:
         print("Matplotlib animation not available")
         return
-    
+
     if coords.shape[1] != 2:
         print("Animation currently only supports 2D coordinates")
         return
-    
+
     n_timesteps, n_points, n_channels = gt_sequence.shape
-    
+
     _HEIGHT_PER_ROW = 1.9
-    _HEIGHT_MARGIN = .2
+    _HEIGHT_MARGIN = 0.2
     _SCATTER_SETTINGS = SCATTER_SETTINGS.copy()
-    _SCATTER_SETTINGS['s'] = _SCATTER_SETTINGS['s'] * .4 * _HEIGHT_PER_ROW
-    _SCATTER_SETTINGS['s'] = _SCATTER_SETTINGS['s'] * 128 / (coords.shape[0] ** .5)
-    
+    _SCATTER_SETTINGS["s"] = _SCATTER_SETTINGS["s"] * 0.4 * _HEIGHT_PER_ROW
+    _SCATTER_SETTINGS["s"] = _SCATTER_SETTINGS["s"] * 128 / (coords.shape[0] ** 0.5)
+
     if isinstance(symmetric, bool):
         symmetric = [symmetric] * n_channels
-    
+
     if colorbar_type == "light":
         cmap_symmetric = plt.cm.jet
         cmap_asymmetric = plt.cm.jet
     else:
         cmap_symmetric = CMAP_BWR
         cmap_asymmetric = CMAP_WRB
-    
+
     # Calculate number of columns and adjust figsize accordingly
     n_cols = 4 if show_error else 3
     base_width = 8.6  # Original width for 4 columns
-    figsize = (base_width * n_cols / 4.0, _HEIGHT_PER_ROW*n_channels+_HEIGHT_MARGIN)
+    figsize = (base_width * n_cols / 4.0, _HEIGHT_PER_ROW * n_channels + _HEIGHT_MARGIN)
     fig = plt.figure(figsize=figsize)
     g_fig = fig.add_gridspec(
         nrows=n_channels,
@@ -377,14 +386,16 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
     figs = []
     for ivar in range(n_channels):
         figs.append(fig.add_subfigure(g_fig[ivar], frameon=False))
-    
+
     if domain is not None:
         plot_domain = domain
     else:
-        plot_domain = ([coords[:, 0].min(), coords[:, 1].min()], 
-                      [coords[:, 0].max(), coords[:, 1].max()])
-    
-    scatter_objects = {'inp': [], 'gt': [], 'pred': [], 'error': []}
+        plot_domain = (
+            [coords[:, 0].min(), coords[:, 1].min()],
+            [coords[:, 0].max(), coords[:, 1].max()],
+        )
+
+    scatter_objects = {"inp": [], "gt": [], "pred": [], "error": []}
     axes_inp = []
     axes_gt = []
     axes_pred = []
@@ -392,13 +403,13 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
     axes_cb_inp = []
     axes_cb_gt = []
     axes_cb_err = []
-    
+
     # Add axes for each channel following plot_estimates pattern exactly
     for ivar in range(n_channels):
         g = figs[ivar].add_gridspec(
             nrows=2,
             ncols=n_cols,
-            height_ratios=[1, .05],
+            height_ratios=[1, 0.05],
             wspace=0.20,
             hspace=0.05,
         )
@@ -409,15 +420,17 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
             axes_err.append(figs[ivar].add_subplot(g[0, 3]))
         else:
             axes_err.append(None)  # Placeholder
-            
+
         axes_cb_inp.append(figs[ivar].add_subplot(g[1, 0]))
         if show_error:
-            axes_cb_gt.append(figs[ivar].add_subplot(g[1, 1:3]))  # Spans 2 columns like plot_estimates
+            axes_cb_gt.append(
+                figs[ivar].add_subplot(g[1, 1:3])
+            )  # Spans 2 columns like plot_estimates
             axes_cb_err.append(figs[ivar].add_subplot(g[1, 3]))
         else:
             axes_cb_gt.append(figs[ivar].add_subplot(g[1, 1:3]))  # Spans to the end
             axes_cb_err.append(None)  # Placeholder
-    
+
     # Settings for all axes (same as plot_estimates)
     all_axes = [axes_inp, axes_gt, axes_pred]
     if show_error:
@@ -429,17 +442,18 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
         ax.set_xlim([plot_domain[0][0], plot_domain[1][0]])
         ax.set_ylim([plot_domain[0][1], plot_domain[1][1]])
         ax.fill_between(
-            x=[plot_domain[0][0], plot_domain[1][0]], 
-            y1=plot_domain[0][1], y2=plot_domain[1][1],
+            x=[plot_domain[0][0], plot_domain[1][0]],
+            y1=plot_domain[0][1],
+            y2=plot_domain[1][1],
             **HATCH_SETTINGS,
         )
-    
-    u_err_0 = (gt_sequence[0] - pred_sequence[0])
-    
+
+    u_err_0 = gt_sequence[0] - pred_sequence[0]
+
     for ivar in range(n_channels):
         gt_all = gt_sequence[:, :, ivar]
         pred_all = pred_sequence[:, :, ivar]
-        
+
         vmax_gtr = np.max(gt_all)
         vmax_prd = np.max(pred_all)
         vmax_out = max(vmax_gtr, vmax_prd)
@@ -447,12 +461,12 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
         vmin_prd = np.min(pred_all)
         vmin_out = min(vmin_gtr, vmin_prd)
         abs_vmax_out = max(np.abs(vmax_out), np.abs(vmin_out))
-        
+
         if input_data is not None:
             vmax_inp = np.max(input_data[:, ivar])
             vmin_inp = np.min(input_data[:, ivar])
             abs_vmax_inp = max(np.abs(vmax_inp), np.abs(vmin_inp))
-            
+
             h_inp = axes_inp[ivar].scatter(
                 x=coords[:, 0],
                 y=coords[:, 1],
@@ -462,13 +476,15 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
                 vmin=(-abs_vmax_inp if symmetric[ivar] else vmin_inp),
                 **_SCATTER_SETTINGS,
             )
-            scatter_objects['inp'].append(h_inp)
-            cb_inp = plt.colorbar(h_inp, cax=axes_cb_inp[ivar], orientation='horizontal')
+            scatter_objects["inp"].append(h_inp)
+            cb_inp = plt.colorbar(
+                h_inp, cax=axes_cb_inp[ivar], orientation="horizontal"
+            )
             cb_inp.formatter.set_powerlimits((-0, 0))
         else:
             h_inp = axes_inp[ivar].scatter([], [], **_SCATTER_SETTINGS)
-            scatter_objects['inp'].append(h_inp)
-        
+            scatter_objects["inp"].append(h_inp)
+
         # Plot ground truth
         h_gt = axes_gt[ivar].scatter(
             x=coords[:, 0],
@@ -479,10 +495,10 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
             vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
             **_SCATTER_SETTINGS,
         )
-        scatter_objects['gt'].append(h_gt)
-        cb_gt = plt.colorbar(h_gt, cax=axes_cb_gt[ivar], orientation='horizontal')
+        scatter_objects["gt"].append(h_gt)
+        cb_gt = plt.colorbar(h_gt, cax=axes_cb_gt[ivar], orientation="horizontal")
         cb_gt.formatter.set_powerlimits((-0, 0))
-        
+
         # Plot prediction
         h_pred = axes_pred[ivar].scatter(
             x=coords[:, 0],
@@ -493,10 +509,10 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
             vmin=(-abs_vmax_out if symmetric[ivar] else vmin_out),
             **_SCATTER_SETTINGS,
         )
-        scatter_objects['pred'].append(h_pred)
-        cb_pred = plt.colorbar(h_pred, cax=axes_cb_gt[ivar], orientation='horizontal')
+        scatter_objects["pred"].append(h_pred)
+        cb_pred = plt.colorbar(h_pred, cax=axes_cb_gt[ivar], orientation="horizontal")
         cb_pred.formatter.set_powerlimits((-0, 0))
-        
+
         if show_error:
             h_err = axes_err[ivar].scatter(
                 x=coords[:, 0],
@@ -504,25 +520,29 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
                 c=np.abs(u_err_0[:, ivar]),
                 cmap=cmap_asymmetric,
                 vmin=0,
-                vmax=np.max(np.abs(gt_sequence[:, :, ivar] - pred_sequence[:, :, ivar])),
+                vmax=np.max(
+                    np.abs(gt_sequence[:, :, ivar] - pred_sequence[:, :, ivar])
+                ),
                 **_SCATTER_SETTINGS,
             )
-            scatter_objects['error'].append(h_err)
-            cb_err = plt.colorbar(h_err, cax=axes_cb_err[ivar], orientation='horizontal')
+            scatter_objects["error"].append(h_err)
+            cb_err = plt.colorbar(
+                h_err, cax=axes_cb_err[ivar], orientation="horizontal"
+            )
             cb_err.formatter.set_powerlimits((-0, 0))
         else:
-            scatter_objects['error'].append(None)  # Placeholder
-    
-    axes_inp[0].set(title='Input')
-    axes_gt[0].set(title='Ground truth')
-    axes_pred[0].set(title='Prediction')
+            scatter_objects["error"].append(None)  # Placeholder
+
+    axes_inp[0].set(title="Input")
+    axes_gt[0].set(title="Ground truth")
+    axes_pred[0].set(title="Prediction")
     if show_error:
-        axes_err[0].set(title='Absolute error')
-    
+        axes_err[0].set(title="Absolute error")
+
     for ivar in range(n_channels):
-        label = names[ivar] if names and ivar < len(names) else f'Variable {ivar:02d}'
+        label = names[ivar] if names and ivar < len(names) else f"Variable {ivar:02d}"
         axes_inp[ivar].set(ylabel=label)
-    
+
     cb_axes = [axes_cb_inp, axes_cb_gt]
     if show_error:
         cb_axes.append(axes_cb_err)
@@ -530,49 +550,54 @@ def create_sequential_animation(gt_sequence: np.ndarray, pred_sequence: np.ndarr
         ax: plt.Axes
         ax.xaxis.get_offset_text().set(size=8)
         ax.xaxis.set_tick_params(labelsize=8)
-    
+
     def animate(frame):
         """Update function for animation."""
         for ivar in range(n_channels):
             # Update ground truth
-            scatter_objects['gt'][ivar].set_array(gt_sequence[frame, :, ivar])
-            
+            scatter_objects["gt"][ivar].set_array(gt_sequence[frame, :, ivar])
+
             # Update prediction
-            scatter_objects['pred'][ivar].set_array(pred_sequence[frame, :, ivar])
-            
+            scatter_objects["pred"][ivar].set_array(pred_sequence[frame, :, ivar])
+
             # Update error (only if show_error is True)
-            if show_error and scatter_objects['error'][ivar] is not None:
-                error = np.abs(gt_sequence[frame, :, ivar] - pred_sequence[frame, :, ivar])
-                scatter_objects['error'][ivar].set_array(error)
-        
+            if show_error and scatter_objects["error"][ivar] is not None:
+                error = np.abs(
+                    gt_sequence[frame, :, ivar] - pred_sequence[frame, :, ivar]
+                )
+                scatter_objects["error"][ivar].set_array(error)
+
         # if time_values and frame < len(time_values):
         #     fig.suptitle(f'Time: {time_values[frame]:.3f}')
         # else:
         #     fig.suptitle(f'Time step: {frame}')
-        
+
         all_scatters = []
         for key in scatter_objects:
-            all_scatters.extend([obj for obj in scatter_objects[key] if obj is not None])
+            all_scatters.extend(
+                [obj for obj in scatter_objects[key] if obj is not None]
+            )
         return all_scatters
-    
-    anim = FuncAnimation(fig, animate, frames=n_timesteps, 
-                        interval=interval, blit=False, repeat=True)
-    
+
+    anim = FuncAnimation(
+        fig, animate, frames=n_timesteps, interval=interval, blit=False, repeat=True
+    )
+
     print(f"Saving sequential animation to {save_path}...")
     try:
-        if save_path.endswith('.gif'):
-            anim.save(save_path, writer='pillow', fps=1000//interval, dpi=150)
-        elif save_path.endswith('.mp4'):
-            anim.save(save_path, writer='ffmpeg', fps=1000//interval, dpi=150)
+        if save_path.endswith(".gif"):
+            anim.save(save_path, writer="pillow", fps=1000 // interval, dpi=150)
+        elif save_path.endswith(".mp4"):
+            anim.save(save_path, writer="ffmpeg", fps=1000 // interval, dpi=150)
         else:
             # Default to gif
-            save_path_gif = save_path + '.gif'
-            anim.save(save_path_gif, writer='pillow', fps=1000//interval, dpi=150)
+            save_path_gif = save_path + ".gif"
+            anim.save(save_path_gif, writer="pillow", fps=1000 // interval, dpi=150)
             print(f"Animation saved as {save_path_gif}")
             return
         print(f"Sequential animation saved successfully: {save_path}")
     except Exception as e:
         print(f"Failed to save animation: {e}")
         print("Try installing pillow (pip install pillow) for GIF support")
-    
+
     plt.close(fig)
