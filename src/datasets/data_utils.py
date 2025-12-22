@@ -325,22 +325,51 @@ def collate_variable_batch(batch):
     return c_batch, u_batch, x_batch, encoder_graphs_list, decoder_graphs_list
 
 
+# def collate_sequential_batch(batch):
+#     """
+#     Custom collate function for sequential data batches.
+#     Handles both fixed and variable coordinate modes.
+#     """
+#     if len(batch[0]) == 2:  # Fixed coordinates mode
+#         input_list, target_list = zip(*batch)
+#         inputs = torch.stack(input_list)
+#         targets = torch.stack(target_list)
+#         return inputs, targets
+#     elif len(batch[0]) == 3:  # Variable coordinates mode
+#         input_list, target_list, coord_list = zip(*batch)
+#         inputs = torch.stack(input_list)
+#         targets = torch.stack(target_list)
+#         coords = torch.stack(coord_list)
+#         return inputs, targets, coords
+#     else:
+#         raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
+
 def collate_sequential_batch(batch):
-    """
-    Custom collate function for sequential data batches.
-    Handles both fixed and variable coordinate modes.
-    """
-    if len(batch[0]) == 2:  # Fixed coordinates mode
+    if len(batch[0]) == 2:
         input_list, target_list = zip(*batch)
         inputs = torch.stack(input_list)
         targets = torch.stack(target_list)
         return inputs, targets
-    elif len(batch[0]) == 3:  # Variable coordinates mode
-        input_list, target_list, coord_list = zip(*batch)
+    elif len(batch[0]) == 3:
+        if batch[0][2].dtype == torch.bool:
+            input_list, target_list, mask_list = zip(*batch)
+            inputs = torch.stack(input_list)
+            targets = torch.stack(target_list)
+            masks = torch.stack(mask_list)
+            return inputs, targets, masks
+        else:
+            input_list, target_list, coord_list = zip(*batch)
+            inputs = torch.stack(input_list)
+            targets = torch.stack(target_list)
+            coords = torch.stack(coord_list)
+            return inputs, targets, coords
+    elif len(batch[0]) == 4:
+        input_list, target_list, coord_list, mask_list = zip(*batch)
         inputs = torch.stack(input_list)
         targets = torch.stack(target_list)
         coords = torch.stack(coord_list)
-        return inputs, targets, coords
+        masks = torch.stack(mask_list)
+        return inputs, targets, coords, masks
     else:
         raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
 

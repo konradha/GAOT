@@ -217,41 +217,47 @@ class SequentialTrainer(BaseTrainer):
         return self.loss_fn(pred, y_batch)
 
     def _train_step_variable_coords(self, batch):
-        """Training step for variable coordinates mode."""
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
+            mask_batch = None
+        elif len(batch) == 4:
+            x_batch, y_batch, coord_batch, mask_batch = batch
         else:
-            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
-                batch
-            )
+            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
+            mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
-
+        
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
+        if mask_batch is not None:
+            mask_batch = mask_batch.to(self.device)
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
-
-        # Handle conditional normalization
+    
         if getattr(self.model_config, "use_conditional_norm", False):
             pred = self.model(
                 latent_tokens_coord=latent_tokens_coord,
                 xcoord=coord_batch,
-                pndata=x_batch[..., :-1],  # exclude last time feature
-                condition=x_batch[..., 0, -2:-1],  # condition from time features
-                encoder_nbrs=encoder_graph_batch if len(batch) > 3 else None,
-                decoder_nbrs=decoder_graph_batch if len(batch) > 3 else None,
+                pndata=x_batch[..., :-1],
+                condition=x_batch[..., 0, -2:-1],
+                encoder_nbrs=None,
+                decoder_nbrs=None,
             )
         else:
             pred = self.model(
                 latent_tokens_coord=latent_tokens_coord,
                 xcoord=coord_batch,
                 pndata=x_batch,
-                encoder_nbrs=encoder_graph_batch if len(batch) > 3 else None,
-                decoder_nbrs=decoder_graph_batch if len(batch) > 3 else None,
+                encoder_nbrs=None,
+                decoder_nbrs=None,
             )
-
-        return self.loss_fn(pred, y_batch)
+        
+        if mask_batch is not None:
+            pred = pred * mask_batch.unsqueeze(-1)
+            y_batch = y_batch * mask_batch.unsqueeze(-1)
+        
+        return self.loss_fn(pred, y_batch) 
 
     def validate(self, loader):
         """Validate the model on validation set."""
@@ -299,17 +305,20 @@ class SequentialTrainer(BaseTrainer):
         """Validation step for variable coordinates."""
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
-            encoder_graph_batch = decoder_graph_batch = None
+            mask_batch = None
+        elif len(batch) == 4:
+            x_batch, y_batch, coord_batch, mask_batch = batch
         else:
-            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
-                batch
-            )
+            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
+            mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
 
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
+        if mask_batch is not None:
+            mask_batch = mask_batch.to(self.device)
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
 
         if getattr(self.model_config, "use_conditional_norm", False):
@@ -318,17 +327,21 @@ class SequentialTrainer(BaseTrainer):
                 xcoord=coord_batch,
                 pndata=x_batch[..., :-1],
                 condition=x_batch[..., 0, -2:-1],
-                encoder_nbrs=encoder_graph_batch,
-                decoder_nbrs=decoder_graph_batch,
+                encoder_nbrs=None,
+                decoder_nbrs=None,
             )
         else:
             pred = self.model(
                 latent_tokens_coord=latent_tokens_coord,
                 xcoord=coord_batch,
                 pndata=x_batch,
-                encoder_nbrs=encoder_graph_batch,
-                decoder_nbrs=decoder_graph_batch,
+                encoder_nbrs=None,
+                decoder_nbrs=None,
             )
+
+        if mask_batch is not None:
+            pred = pred * mask_batch.unsqueeze(-1)
+            y_batch = y_batch * mask_batch.unsqueeze(-1)
 
         return self.loss_fn(pred, y_batch)
 
