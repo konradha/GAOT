@@ -344,6 +344,7 @@ def collate_variable_batch(batch):
 #     else:
 #         raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
 
+
 def collate_sequential_batch(batch):
     if len(batch[0]) == 2:
         input_list, target_list = zip(*batch)
@@ -523,7 +524,9 @@ class DynamicPairDatasetWithMask(Dataset):
         x_data: Optional[torch.Tensor] = None,
         mask_data: Optional[torch.Tensor] = None,
         is_variable_coords: bool = False,
+        coord_scaler: Optional[Callable] = None,
     ):
+        self.coord_scaler = coord_scaler
         self.dataset_name = dataset_name
         self.u_data = u_data
         self.c_data = c_data
@@ -654,6 +657,8 @@ class DynamicPairDatasetWithMask(Dataset):
 
         if self.is_variable_coords and self.x_data is not None:
             x_coord = self.x_data[sample_idx, t_in_idx]
+            if self.coord_scaler is not None:
+                x_coord = self.coord_scaler(x_coord)
             if mask_combined is not None:
                 return input_data, target, x_coord, mask_combined
             else:

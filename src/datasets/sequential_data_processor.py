@@ -387,6 +387,7 @@ class SequentialDataProcessor(DataProcessor):
                 stats=self.stats,
                 use_time_norm=self.use_time_norm,
                 is_variable_coords=is_variable_coords,
+                coord_scaler=self.coord_scaler,
             )
 
             val_dataset = DynamicPairDatasetWithMask(
@@ -401,6 +402,7 @@ class SequentialDataProcessor(DataProcessor):
                 stats=self.stats,
                 use_time_norm=self.use_time_norm,
                 is_variable_coords=is_variable_coords,
+                coord_scaler=self.coord_scaler,
             )
 
             loaders["train"] = DataLoader(
@@ -436,6 +438,7 @@ class SequentialDataProcessor(DataProcessor):
             stats=self.stats,
             use_time_norm=self.use_time_norm,
             is_variable_coords=is_variable_coords,
+            coord_scaler=self.coord_scaler,
         )
 
         loaders["test"] = DataLoader(

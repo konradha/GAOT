@@ -105,13 +105,13 @@ class SequentialTrainer(BaseTrainer):
     def _init_variable_coords_mode(self, data_splits):
         """Initialize for variable coordinates mode."""
         print("Setting up variable coordinates mode for sequential data...")
-        
+
         neighbor_search_method = self.model_config.args.magno.neighbor_search_method
         self.graph_builder = GraphBuilder(neighbor_search_method=neighbor_search_method)
-        
+
         gno_radius = getattr(self.model_config.args.magno, "radius", 0.033)
         scales = getattr(self.model_config.args.magno, "scales", [1.0])
-        
+
         # For sequential data, x has shape [n_samples, n_timesteps, n_nodes, coord_dim]
         # Graph builder expects [n_samples, n_nodes, coord_dim]
         # Extract first timestep since mesh is static within each simulation
@@ -121,7 +121,7 @@ class SequentialTrainer(BaseTrainer):
             if x.ndim == 4:
                 x = x[:, 0, :, :]  # Take first timestep
             data_splits_for_graphs[split_name] = {"x": x}
-        
+
         all_graphs = self.graph_builder.build_all_graphs(
             data_splits=data_splits_for_graphs,
             latent_queries=self.latent_tokens_coord,
@@ -129,7 +129,7 @@ class SequentialTrainer(BaseTrainer):
             scales=scales,
             build_train=self.setup_config.train,
         )
-        
+
         loader_kwargs = {
             "encoder_graphs": {
                 "train": all_graphs["train"]["encoder"]
@@ -146,16 +146,16 @@ class SequentialTrainer(BaseTrainer):
                 "test": all_graphs["test"]["decoder"],
             },
         }
-        
+
         loaders = self.data_processor.create_sequential_data_loaders(
             data_splits=data_splits,
             is_variable_coords=True,
             **loader_kwargs,
         )
-        
+
         self.train_loader = loaders["train"]
         self.val_loader = loaders["val"]
-        self.test_loader = loaders["test"]  
+        self.test_loader = loaders["test"]
 
     def _init_fixed_coords_mode(self, data_splits):
         """Initialize for fixed coordinates mode."""
@@ -223,18 +223,20 @@ class SequentialTrainer(BaseTrainer):
         elif len(batch) == 4:
             x_batch, y_batch, coord_batch, mask_batch = batch
         else:
-            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
+            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
+                batch
+            )
             mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
-        
+
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
         if mask_batch is not None:
             mask_batch = mask_batch.to(self.device)
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
-    
+
         if getattr(self.model_config, "use_conditional_norm", False):
             pred = self.model(
                 latent_tokens_coord=latent_tokens_coord,
@@ -252,12 +254,12 @@ class SequentialTrainer(BaseTrainer):
                 encoder_nbrs=None,
                 decoder_nbrs=None,
             )
-        
+
         if mask_batch is not None:
             pred = pred * mask_batch.unsqueeze(-1)
             y_batch = y_batch * mask_batch.unsqueeze(-1)
-        
-        return self.loss_fn(pred, y_batch) 
+
+        return self.loss_fn(pred, y_batch)
 
     def validate(self, loader):
         """Validate the model on validation set."""
@@ -309,7 +311,9 @@ class SequentialTrainer(BaseTrainer):
         elif len(batch) == 4:
             x_batch, y_batch, coord_batch, mask_batch = batch
         else:
-            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = batch
+            x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
+                batch
+            )
             mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
@@ -412,14 +416,19 @@ class SequentialTrainer(BaseTrainer):
         for mode in modes:
             print(f"Testing in {mode} mode...")
             all_relative_errors = []
+
+            max_t = self.test_loader.dataset.u_data.shape[1]
+
             if mode == "autoregressive":
-                time_indices = np.arange(0, 15, 2)  # [0, 2, 4, ..., 14]
+                time_indices = np.arange(0, max_t, 2)
             elif mode == "direct":
-                time_indices = np.array([0, 14])
+                time_indices = np.array([0, max_t - 1])
             elif mode == "star":
-                time_indices = np.array([0, 4, 8, 12, 14])
+                time_indices = np.array(
+                    [i for i in [0, 4, 8, 12, max_t - 1] if i < max_t]
+                )
             else:
-                time_indices = np.arange(0, 15, 2)  # Default
+                time_indices = np.arange(0, max_t, 2)
 
             test_data_splits = {
                 "test": {

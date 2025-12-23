@@ -5,13 +5,13 @@
         "dtype": "torch.float32",
         "trainer_name": "sequential",
         "train": true,
-        "test": true,
+        "test": false,
         "ckpt": false
     },
 
     "model": {
         "name": "gaot",
-        "latent_tokens_size": [32, 32],
+        "latent_tokens_size": [64, 64],
         "args": {
             "magno": {
                 "coord_dim": 2,
@@ -33,7 +33,7 @@
 
     "dataset": {
         "name": "eagle_tri_aggregated",
-        "metaname": "eagle/triangle",
+        "metaname": "eagle/triangle_full",
         "base_path": "/var/llm/sci-data/",
         "use_metadata_stats": false,
         "use_sparse": false,
@@ -43,7 +43,7 @@
         "max_time_diff": 6,
         "time_step": 2,
         "coord_scaling": "global_scaling",
-        "batch_size": 8,
+        "batch_size": 2,
         "num_workers": 0,
         "shuffle": true,
         "rand_dataset": true,
@@ -58,13 +58,13 @@
         "args": {
             "lr": 1e-4,
             "weight_decay": 1e-5,
-            "epoch": 500,
+            "epoch": 60,
             "loss_scale": 1.0,
-            "eval_every_eps": 5,
+            "eval_every_eps": 1,
             "scheduler": "mix",
-            "max_lr": 5e-4,
-            "min_lr": 1e-5,
-            "final_lr": 1e-5
+            "max_lr": 1e-3,
+            "min_lr": 1e-4,
+            "final_lr": 5e-5
         }
     },
 
