@@ -219,22 +219,19 @@ class SequentialTrainer(BaseTrainer):
     def _train_step_variable_coords(self, batch):
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
-            mask_batch = None
         elif len(batch) == 4:
             x_batch, y_batch, coord_batch, mask_batch = batch
         else:
             x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
                 batch
             )
-            mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
 
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
-        if mask_batch is not None:
-            mask_batch = mask_batch.to(self.device)
+
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
 
         if getattr(self.model_config, "use_conditional_norm", False):
@@ -255,11 +252,11 @@ class SequentialTrainer(BaseTrainer):
                 decoder_nbrs=None,
             )
 
-        if mask_batch is not None:
-            pred = pred * mask_batch.unsqueeze(-1)
-            y_batch = y_batch * mask_batch.unsqueeze(-1)
+        valid = coord_batch.abs().sum(dim=-1) > 1e-6
+        diff = (pred - y_batch) ** 2
+        loss = diff[valid].mean()
 
-        return self.loss_fn(pred, y_batch)
+        return loss
 
     def validate(self, loader):
         """Validate the model on validation set."""
@@ -307,22 +304,18 @@ class SequentialTrainer(BaseTrainer):
         """Validation step for variable coordinates."""
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
-            mask_batch = None
         elif len(batch) == 4:
             x_batch, y_batch, coord_batch, mask_batch = batch
         else:
             x_batch, y_batch, coord_batch, encoder_graph_batch, decoder_graph_batch = (
                 batch
             )
-            mask_batch = None
             encoder_graph_batch = move_to_device(encoder_graph_batch, self.device)
             decoder_graph_batch = move_to_device(decoder_graph_batch, self.device)
 
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
-        if mask_batch is not None:
-            mask_batch = mask_batch.to(self.device)
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
 
         if getattr(self.model_config, "use_conditional_norm", False):
@@ -343,11 +336,11 @@ class SequentialTrainer(BaseTrainer):
                 decoder_nbrs=None,
             )
 
-        if mask_batch is not None:
-            pred = pred * mask_batch.unsqueeze(-1)
-            y_batch = y_batch * mask_batch.unsqueeze(-1)
+        valid = coord_batch.abs().sum(dim=-1) > 1e-6
+        diff = (pred - y_batch) ** 2
+        loss = diff[valid].mean()
 
-        return self.loss_fn(pred, y_batch)
+        return loss
 
     def _call_model_autoregressive_predict(
         self, x_batch, time_indices, coord_batch=None

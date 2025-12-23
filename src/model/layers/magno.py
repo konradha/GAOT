@@ -214,6 +214,9 @@ class MAGNOEncoder(nn.Module):
                     data=x_coord, queries=latent_coord, radius=scaled_radius
                 )
                 neighbors_per_scale.append(neighbors)
+                print(
+                    f"[MAGNO] neighbors found: min={min(len(n) for n in neighbors)}, max={max(len(n) for n in neighbors)}, avg={sum(len(n) for n in neighbors) / len(neighbors):.1f}"
+                )
 
         else:  # mode == 'vx'
             # Variable coordinates - compute per batch
@@ -232,6 +235,9 @@ class MAGNOEncoder(nn.Module):
                     neighbors_per_scale_batch.append(neighbors)
                 neighbors_per_batch.append(neighbors_per_scale_batch)
             neighbors_per_scale = neighbors_per_batch
+            print(
+                f"[MAGNO] neighbors found: min={min(len(n) for n in neighbors)}, max={max(len(n) for n in neighbors)}, avg={sum(len(n) for n in neighbors) / len(neighbors):.1f}"
+            )
 
         # Cache the result
         self.neighbor_cache[cache_key] = neighbors_per_scale
@@ -595,6 +601,9 @@ class MAGNODecoder(nn.Module):
                     neighbors_per_scale_batch.append(neighbors)
                 neighbors_per_batch.append(neighbors_per_scale_batch)
             neighbors_per_scale = neighbors_per_batch
+            print(
+                f"[MAGNO-late] neighbors found: min={min(len(n) for n in neighbors)}, max={max(len(n) for n in neighbors)}, avg={sum(len(n) for n in neighbors) / len(neighbors):.1f}"
+            )
 
         self.neighbor_cache[cache_key] = neighbors_per_scale
         return neighbors_per_scale

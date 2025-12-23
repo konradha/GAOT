@@ -68,7 +68,8 @@ class SequentialDataProcessor(DataProcessor):
             x_array = self._load_sequential_coordinate_data(ds, u_array)
 
             if self.has_mask:
-                mask_array = ds[self.metadata.group_mask].values
+                # mask_array = ds[self.metadata.group_mask].values
+                mask_array = ~ds[self.metadata.group_mask].values
             else:
                 mask_array = None
 
@@ -191,7 +192,7 @@ class SequentialDataProcessor(DataProcessor):
             x_train = x_val = x_test = x_coord
 
         self.stats = self._compute_sequential_stats_with_mask(
-            u_train, c_train, t_values, mask_train
+            u_train, c_train, t_values, x_train
         )
 
         for key, value in self.stats.items():
@@ -226,34 +227,26 @@ class SequentialDataProcessor(DataProcessor):
         u_train: np.ndarray,
         c_train: Optional[np.ndarray],
         t_values: np.ndarray,
-        mask_train: Optional[np.ndarray],
+        x_train: np.ndarray,
     ) -> Dict:
         stats = {}
 
-        if mask_train is not None:
-            mask_expanded = mask_train[..., np.newaxis]
-            u_masked = np.where(mask_expanded, u_train, np.nan)
-            u_flat = u_masked.reshape(-1, u_train.shape[-1])
-            u_mean = np.nanmean(u_flat, axis=0)
-            u_std = np.nanstd(u_flat, axis=0) + EPSILON
-        else:
-            u_flat = u_train.reshape(-1, u_train.shape[-1])
-            u_mean = np.mean(u_flat, axis=0)
-            u_std = np.std(u_flat, axis=0) + EPSILON
+        stats = {}
+        valid_mask = np.abs(x_train).sum(axis=-1) > 1e-6
+        valid_expanded = valid_mask[..., np.newaxis]
+
+        u_masked = np.where(valid_expanded, u_train, np.nan)
+        u_flat = u_masked.reshape(-1, u_train.shape[-1])
+        u_mean = np.nanmean(u_flat, axis=0)
+        u_std = np.nanstd(u_flat, axis=0) + EPSILON
 
         stats["u"] = {"mean": u_mean, "std": u_std}
 
         if c_train is not None:
-            if mask_train is not None:
-                mask_expanded = mask_train[..., np.newaxis]
-                c_masked = np.where(mask_expanded, c_train, np.nan)
-                c_flat = c_masked.reshape(-1, c_train.shape[-1])
-                c_mean = np.nanmean(c_flat, axis=0)
-                c_std = np.nanstd(c_flat, axis=0) + EPSILON
-            else:
-                c_flat = c_train.reshape(-1, c_train.shape[-1])
-                c_mean = np.mean(c_flat, axis=0)
-                c_std = np.std(c_flat, axis=0) + EPSILON
+            c_masked = np.where(valid_expanded, c_train, np.nan)
+            c_flat = c_masked.reshape(-1, c_train.shape[-1])
+            c_mean = np.nanmean(c_flat, axis=0)
+            c_std = np.nanstd(c_flat, axis=0) + EPSILON
             stats["c"] = {"mean": c_mean, "std": c_std}
 
         if self.use_time_norm:
@@ -283,22 +276,23 @@ class SequentialDataProcessor(DataProcessor):
 
         n_samples_subset = min(int(len(u_train) * self.sample_rate), len(u_train))
         u_subset = u_train[:n_samples_subset]
-        mask_subset = mask_train[:n_samples_subset] if mask_train is not None else None
+        x_subset = x_train[:n_samples_subset]
 
         for sample_idx in range(n_samples_subset):
             for t_idx in range(min(self.max_time_diff, u_subset.shape[1] - 1)):
                 u_curr = u_subset[sample_idx, t_idx]
                 u_next = u_subset[sample_idx, t_idx + 1]
+                x_curr = x_subset[sample_idx, t_idx]
+                x_next = x_subset[sample_idx, t_idx + 1]
                 dt = t_values[t_idx + 1] - t_values[t_idx]
 
-                if mask_subset is not None:
-                    m_curr = mask_subset[sample_idx, t_idx]
-                    m_next = mask_subset[sample_idx, t_idx + 1]
-                    valid = m_curr & m_next
-                    if not valid.any():
-                        continue
-                    u_curr = u_curr[valid]
-                    u_next = u_next[valid]
+                valid_curr = np.abs(x_curr).sum(axis=-1) > 1e-6
+                valid_next = np.abs(x_next).sum(axis=-1) > 1e-6
+                valid = valid_curr & valid_next
+                if not valid.any():
+                    continue
+                u_curr = u_curr[valid]
+                u_next = u_next[valid]
 
                 residual = u_next - u_curr
                 derivative = residual / dt
@@ -316,7 +310,7 @@ class SequentialDataProcessor(DataProcessor):
             der_mean = np.mean(derivatives, axis=0)
             der_std = np.std(derivatives, axis=0) + EPSILON
             stats["der"] = {"mean": der_mean, "std": der_std}
-
+        print(f"[STATS DEBUG] valid_mask.sum()={valid_mask.sum()}, u_mean={u_mean}, u_std={u_std}")
         return stats
 
     def _convert_to_tensors_with_mask(
@@ -387,7 +381,6 @@ class SequentialDataProcessor(DataProcessor):
                 stats=self.stats,
                 use_time_norm=self.use_time_norm,
                 is_variable_coords=is_variable_coords,
-                coord_scaler=self.coord_scaler,
             )
 
             val_dataset = DynamicPairDatasetWithMask(
@@ -402,7 +395,6 @@ class SequentialDataProcessor(DataProcessor):
                 stats=self.stats,
                 use_time_norm=self.use_time_norm,
                 is_variable_coords=is_variable_coords,
-                coord_scaler=self.coord_scaler,
             )
 
             loaders["train"] = DataLoader(
@@ -438,7 +430,6 @@ class SequentialDataProcessor(DataProcessor):
             stats=self.stats,
             use_time_norm=self.use_time_norm,
             is_variable_coords=is_variable_coords,
-            coord_scaler=self.coord_scaler,
         )
 
         loaders["test"] = DataLoader(

@@ -524,13 +524,16 @@ class DynamicPairDatasetWithMask(Dataset):
         x_data: Optional[torch.Tensor] = None,
         mask_data: Optional[torch.Tensor] = None,
         is_variable_coords: bool = False,
-        coord_scaler: Optional[Callable] = None,
     ):
-        self.coord_scaler = coord_scaler
         self.dataset_name = dataset_name
         self.u_data = u_data
         self.c_data = c_data
         self.x_data = x_data
+        self.coord_scale_params = None
+        if is_variable_coords and x_data is not None:
+            x_min = x_data.min()
+            x_max = x_data.max()
+            self.coord_scale_params = (x_min, x_max)
         self.mask_data = mask_data
         self.t_values = t_values
         self.metadata = metadata
@@ -542,6 +545,10 @@ class DynamicPairDatasetWithMask(Dataset):
         self.num_samples, self.num_timesteps, self.num_nodes, self.num_vars = (
             u_data.shape
         )
+
+        size = 4 if "32" in str(u_data.dtype) else 8
+
+        print("DATA LOAD COST:", np.prod(u_data.shape) * size)
 
         self.num_timesteps = min(self.num_timesteps - 1, max_time_diff)
         self.t_values = self.t_values[: self.num_timesteps + 1]
@@ -607,6 +614,9 @@ class DynamicPairDatasetWithMask(Dataset):
             mask_in = self.mask_data[sample_idx, t_in_idx]
             mask_out = self.mask_data[sample_idx, t_out_idx]
             mask_combined = mask_in & mask_out
+            print(
+                f"[MASK] mask_in: {mask_in.float().mean():.3f}, mask_out: {mask_out.float().mean():.3f}, combined: {mask_combined.float().mean():.3f}"
+            )
         else:
             mask_combined = None
 
@@ -633,7 +643,9 @@ class DynamicPairDatasetWithMask(Dataset):
         input_features.extend([start_time_feat, time_diff_feat])
 
         input_data = torch.cat(input_features, dim=-1)
-
+        print(
+            f"[DATA_UTILS] u_out: [{u_out.min():.2f}, {u_out.max():.2f}], mean: {self.stats['u']['mean']}, std: {self.stats['u']['std']}"
+        )
         if self.stepper_mode == "output":
             target = (u_out - self.stats["u"]["mean"]) / self.stats["u"]["std"]
         elif self.stepper_mode == "residual":
@@ -657,8 +669,9 @@ class DynamicPairDatasetWithMask(Dataset):
 
         if self.is_variable_coords and self.x_data is not None:
             x_coord = self.x_data[sample_idx, t_in_idx]
-            if self.coord_scaler is not None:
-                x_coord = self.coord_scaler(x_coord)
+            if self.coord_scale_params is not None:
+                x_min, x_max = self.coord_scale_params
+                x_coord = (x_coord - x_min) / (x_max - x_min) * 2 - 1
             if mask_combined is not None:
                 return input_data, target, x_coord, mask_combined
             else:
