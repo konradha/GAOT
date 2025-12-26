@@ -73,18 +73,22 @@ def load_model(config_path, ckpt_path, device):
     return model, latent_queries, metadata
 
 
-def load_data(nc_path, active_vars):
+def load_data(nc_path, active_vars, n_samples=20, n_timesteps=7):
     import xarray as xr
 
     with xr.open_dataset(nc_path) as ds:
         u = ds["u"].values[..., active_vars]
         x = ds["x"].values
         mask = ds["mask"].values
+    x_subset = x[:n_samples, :n_timesteps]
+    u_subset = u[:n_samples, :n_timesteps]
 
-    valid = mask[..., np.newaxis].astype(bool)
-    u_masked = np.where(valid, u, np.nan)
-    u_mean = np.nanmean(u_masked.reshape(-1, u.shape[-1]), axis=0)
-    u_std = np.nanstd(u_masked.reshape(-1, u.shape[-1]), axis=0) + 1e-10
+    valid = np.abs(x_subset).sum(axis=-1) > 1e-6
+    valid_expanded = valid[..., np.newaxis]
+
+    u_masked = np.where(valid_expanded, u_subset, np.nan)
+    u_mean = np.nanmean(u_masked.reshape(-1, u_subset.shape[-1]), axis=0)
+    u_std = np.nanstd(u_masked.reshape(-1, u_subset.shape[-1]), axis=0) + 1e-10
 
     return u, x, mask, u_mean, u_std
 
@@ -207,7 +211,7 @@ def main():
     model, latent_q, metadata = load_model(config_path, ckpt_path, device)
     u, x, mask, u_mean, u_std = load_data(nc_path, metadata.active_variables)
 
-    samples = [0, 10, 50, 100, 200]
+    samples = [0, 5, 10, 15, 19]
     time_pairs = [(0, 2), (0, 4), (0, 6)]
 
     results = []

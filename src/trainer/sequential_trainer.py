@@ -217,6 +217,7 @@ class SequentialTrainer(BaseTrainer):
         return self.loss_fn(pred, y_batch)
 
     def _train_step_variable_coords(self, batch):
+        mask_batch = None
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
         elif len(batch) == 4:
@@ -231,6 +232,8 @@ class SequentialTrainer(BaseTrainer):
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
+        if mask_batch is not None:
+            mask_batch = mask_batch.to(self.device)
 
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
 
@@ -253,6 +256,8 @@ class SequentialTrainer(BaseTrainer):
             )
 
         valid = coord_batch.abs().sum(dim=-1) > 1e-6
+        if mask_batch is not None:
+            valid = valid & (~mask_batch.bool())
         diff = (pred - y_batch) ** 2
         loss = diff[valid].mean()
 
@@ -302,6 +307,7 @@ class SequentialTrainer(BaseTrainer):
 
     def _validate_variable_coords(self, batch):
         """Validation step for variable coordinates."""
+        mask_batch = None
         if len(batch) == 3:
             x_batch, y_batch, coord_batch = batch
         elif len(batch) == 4:
@@ -316,6 +322,9 @@ class SequentialTrainer(BaseTrainer):
         x_batch = x_batch.to(self.device)
         y_batch = y_batch.to(self.device)
         coord_batch = coord_batch.to(self.device)
+        if mask_batch is not None:
+            mask_batch = mask_batch.to(self.device)
+
         latent_tokens_coord = self.latent_tokens_coord.to(self.device)
 
         if getattr(self.model_config, "use_conditional_norm", False):
@@ -337,6 +346,8 @@ class SequentialTrainer(BaseTrainer):
             )
 
         valid = coord_batch.abs().sum(dim=-1) > 1e-6
+        if mask_batch is not None:
+            valid = valid & (~mask_batch.bool())
         diff = (pred - y_batch) ** 2
         loss = diff[valid].mean()
 

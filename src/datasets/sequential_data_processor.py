@@ -310,7 +310,9 @@ class SequentialDataProcessor(DataProcessor):
             der_mean = np.mean(derivatives, axis=0)
             der_std = np.std(derivatives, axis=0) + EPSILON
             stats["der"] = {"mean": der_mean, "std": der_std}
-        print(f"[STATS DEBUG] valid_mask.sum()={valid_mask.sum()}, u_mean={u_mean}, u_std={u_std}")
+        print(
+            f"[STATS DEBUG] valid_mask.sum()={valid_mask.sum()}, u_mean={u_mean}, u_std={u_std}"
+        )
         return stats
 
     def _convert_to_tensors_with_mask(
