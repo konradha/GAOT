@@ -16,6 +16,7 @@ import os
 import json
 
 from src.model.gaot import GAOT
+# from src.model.boat import BOAT as GAOT
 from src.model.layers.magno import MAGNOConfig
 from src.model.layers.attn import TransformerConfig
 
@@ -70,7 +71,7 @@ def build_config():
     config.args = Config()
     config.args.magno = MAGNOConfig(
         coord_dim=2,
-        radius=0.1,
+        radius=0.05,
         hidden_size=64,
         mlp_layers=3,
         lifting_channels=32,
@@ -98,24 +99,23 @@ def build_training_config():
     config.test_size = 50
 
     config.max_time_diff = 30
-    config.time_step = 3
-    config.pairs_per_sample = 30
+    config.pairs_per_sample = 50
 
     config.n_epochs = 500
     config.eval_every = 2
 
     config.lr = 1e-3
-    config.max_lr = 1.25e-3  # 1e-2 <- eff batch is 8
+    config.max_lr = 1.25e-3  # num gpus
     config.min_lr = 1e-5
     config.final_lr = 1e-5
     config.weight_decay = 1e-3
 
-    config.warmup_fraction = 0.1  # 0.02 <- we use smaller epoch num
+    config.warmup_fraction = 0.1
     config.cosine_fraction = 0.90
 
     config.accumulation_steps = 8
 
-    config.eval_tau_values = [1, 3, 6, 9, 15, 30, 51, 90, 180, 249]
+    config.eval_tau_values = [3, 30, 180]  # [1, 3, 6, 9, 15, 30, 51, 90, 180, 249]
     config.direct_tau_max = 30
 
     config.seed = 1
@@ -180,11 +180,8 @@ def compute_global_stats(
     sample_indices,
     n_timesteps=990,
     max_time_diff=30,
-    time_step=3,
     n_samples_for_stats=50,
 ):
-    log_info(f"Computing global statistics over full trajectory...")
-
     samples_to_use = sample_indices[: min(n_samples_for_stats, len(sample_indices))]
 
     with h5py.File(vtkhdf_path, "r") as f:
@@ -200,15 +197,12 @@ def compute_global_stats(
         der_sq_sums = np.zeros(4, dtype=np.float64)
         der_count = 0
 
-        iterator = (
-            tqdm(samples_to_use, desc="Stats") if is_main_process() else samples_to_use
-        )
-        for sample_idx in iterator:
+        for sample_idx in samples_to_use:
             nc = int(node_counts[sample_idx])
             base = sum(int(node_counts[s]) * n_timesteps for s in range(sample_idx))
 
-            prev_vals = None
-            for t in range(0, n_timesteps, time_step):
+            cached_vals = {}
+            for t in range(n_timesteps):
                 off = base + t * nc
                 vals = np.stack(
                     [
@@ -219,18 +213,19 @@ def compute_global_stats(
                     ],
                     axis=-1,
                 )
+                cached_vals[t] = vals
 
                 u_sums += vals.sum(axis=0)
                 u_sq_sums += (vals**2).sum(axis=0)
                 u_count += nc
 
-                if prev_vals is not None:
-                    deriv = (vals - prev_vals) / time_step
+            for t_in in range(n_timesteps - max_time_diff):
+                for lag in range(1, max_time_diff + 1):
+                    t_out = t_in + lag
+                    deriv = (cached_vals[t_out] - cached_vals[t_in]) / lag
                     der_sums += deriv.sum(axis=0)
                     der_sq_sums += (deriv**2).sum(axis=0)
                     der_count += nc
-
-                prev_vals = vals
 
     u_mean = u_sums / u_count
     u_std = np.maximum(np.sqrt(u_sq_sums / u_count - u_mean**2), 1e-6)
@@ -238,9 +233,8 @@ def compute_global_stats(
     der_mean = der_sums / der_count
     der_std = np.maximum(np.sqrt(der_sq_sums / der_count - der_mean**2), 1e-6)
 
-    max_valid_t = n_timesteps - 1 - max_time_diff
-    all_start_times = np.arange(0, max_valid_t + 1, time_step, dtype=np.float32)
-    all_lags = np.arange(time_step, max_time_diff + 1, time_step, dtype=np.float32)
+    all_start_times = np.arange(0, n_timesteps - max_time_diff, dtype=np.float32)
+    all_lags = np.arange(1, max_time_diff + 1, dtype=np.float32)
 
     start_time_mean = float(all_start_times.mean())
     start_time_std = float(max(all_start_times.std(), 1e-6))
@@ -259,24 +253,10 @@ def compute_global_stats(
         "n_timesteps": n_timesteps,
     }
 
-    log_info(f"Stats computed from {len(samples_to_use)} samples, {u_count} points")
-    log_info(f"  u_mean={u_mean}, u_std={u_std}")
-    log_info(f"  der_mean={der_mean}, der_std={der_std}")
-    log_info(
-        f"  start_time~N({start_time_mean:.1f},{start_time_std:.1f}), "
-        f"lag~N({time_diff_mean:.1f},{time_diff_std:.1f})"
-    )
-
     return stats
 
 
-def load_shared_data(
-    vtkhdf_path, neighbors_path, all_indices, max_time_diff, time_step, n_timesteps=990
-):
-    log_info(
-        f"Loading shared VTKHDF data for {len(all_indices)} samples (full trajectories)..."
-    )
-
+def load_shared_data(vtkhdf_path, neighbors_path, all_indices, n_timesteps=990):
     with h5py.File(vtkhdf_path, "r") as f:
         node_offsets = f["SampleNodeOffset"][:].astype(np.int64)
         node_counts = f["SampleNodeCount"][:].astype(np.int64)
@@ -289,19 +269,14 @@ def load_shared_data(
         mask_full = f["VTKHDF/PointData/drone_mask"][:]
 
     fields, masks, coords = {}, {}, {}
-    iterator = (
-        tqdm(all_indices, desc="Preloading samples")
-        if is_main_process()
-        else all_indices
-    )
 
-    for sample_idx in iterator:
+    for sample_idx in all_indices:
         nc = int(node_counts[sample_idx])
         ns = int(node_offsets[sample_idx])
         base = sum(int(node_counts[s]) * n_timesteps for s in range(sample_idx))
         coords[sample_idx] = points[ns : ns + nc].copy()
 
-        for t in range(0, n_timesteps, time_step):
+        for t in range(n_timesteps):
             off = base + t * nc
             fields[(sample_idx, t)] = np.stack(
                 [
@@ -316,9 +291,6 @@ def load_shared_data(
 
     del vx_full, vy_full, ps_full, pg_full, mask_full
 
-    log_info(f"Loaded {len(fields)} field snapshots across {len(all_indices)} samples")
-
-    log_info("Loading neighbor graphs...")
     nbrs = torch.load(neighbors_path, weights_only=False)
     latent_grid = nbrs["latent_grid"].astype(np.float32)
     coord_min, coord_max = nbrs["coord_min"], nbrs["coord_max"]
@@ -356,13 +328,11 @@ class EAGLEDataset(Dataset):
         sample_indices,
         stats,
         max_time_diff=30,
-        time_step=3,
         pairs_per_sample=30,
         n_timesteps=990,
     ):
         self.sample_indices = sample_indices
         self.max_time_diff = max_time_diff
-        self.time_step = time_step
         self.pairs_per_sample = pairs_per_sample
         self.n_timesteps = n_timesteps
 
@@ -382,8 +352,8 @@ class EAGLEDataset(Dataset):
         self.coord_max = shared_data["coord_max"]
 
         self.max_t_start = n_timesteps - max_time_diff - 1
-        self.valid_t_starts = np.arange(0, self.max_t_start + 1, time_step)
-        self.valid_lags = np.arange(time_step, max_time_diff + 1, time_step)
+        self.valid_t_starts = np.arange(0, self.max_t_start + 1)
+        self.valid_lags = np.array([3])  # np.arange(1, max_time_diff + 1)
 
     def __len__(self):
         return len(self.sample_indices) * self.pairs_per_sample
@@ -451,7 +421,6 @@ def create_dataloaders(
     val_idx,
     test_idx,
     max_time_diff=30,
-    time_step=3,
     pairs_per_sample=30,
     n_timesteps=990,
     world_size=1,
@@ -462,7 +431,6 @@ def create_dataloaders(
         train_idx,
         stats,
         max_time_diff,
-        time_step,
         pairs_per_sample,
         n_timesteps,
     )
@@ -471,7 +439,6 @@ def create_dataloaders(
         val_idx,
         stats,
         max_time_diff,
-        time_step,
         pairs_per_sample,
         n_timesteps,
     )
@@ -480,7 +447,6 @@ def create_dataloaders(
         test_idx,
         stats,
         max_time_diff,
-        time_step,
         pairs_per_sample,
         n_timesteps,
     )
@@ -716,20 +682,15 @@ def autoregressive_rollout(
     encoder_nbrs,
     decoder_nbrs,
     device,
-    time_step=3,
     eval_tau_values=None,
     direct_tau_max=30,
+    ar_step=3,
 ):
     model.eval()
 
     if eval_tau_values is None:
-        eval_tau_values = [1, 3, 6, 9, 15, 30, 51, 90, 180, 249]
-
-    eval_tau_values = [
-        tau for tau in eval_tau_values if tau % time_step == 0 or tau == 1
-    ]
-    if 1 in eval_tau_values and time_step != 1:
-        eval_tau_values.remove(1)
+        eval_tau_values = [3, 30, 249]
+        # eval_tau_values = [1, 3, 6, 9, 15, 30, 51, 90, 180, 249]
 
     u_mean = stats["u_mean"].to(device)
     u_std = stats["u_std"].to(device)
@@ -760,9 +721,7 @@ def autoregressive_rollout(
         for tau in eval_tau_values
     }
 
-    for sample_idx in tqdm(
-        sample_indices, desc="Rollout", disable=not is_main_process()
-    ):
+    for sample_idx in sample_indices:
         coords_np = shared_data["coords"][sample_idx]
         coords = torch.from_numpy(coords_np).to(device)
         coords_norm = 2.0 * (coords - coord_min) / (coord_max - coord_min) - 1.0
@@ -811,10 +770,10 @@ def autoregressive_rollout(
                 u_pred = u_curr + pred_deriv * tau
             else:
                 u_curr = u_t0.clone()
-                n_steps = tau // time_step
+                n_steps = tau // ar_step
 
                 for step in range(n_steps):
-                    t_curr = step * time_step
+                    t_curr = step * ar_step
 
                     if (sample_idx, t_curr) in shared_data["masks"]:
                         mask = torch.from_numpy(
@@ -828,7 +787,7 @@ def autoregressive_rollout(
                     u_curr_norm = (u_curr - u_mean) / u_std
 
                     start_time_norm = (float(t_curr) - start_time_mean) / start_time_std
-                    time_diff_norm = (float(time_step) - time_diff_mean) / time_diff_std
+                    time_diff_norm = (float(ar_step) - time_diff_mean) / time_diff_std
 
                     time_feats = torch.full(
                         (nc, 2), 0.0, device=device, dtype=torch.float32
@@ -844,7 +803,32 @@ def autoregressive_rollout(
                         latent_grid, coords_norm, inputs, coords_norm, enc, dec
                     )
                     pred_deriv = pred.squeeze(0) * der_std + der_mean
-                    u_curr = u_curr + pred_deriv * time_step
+                    u_curr = u_curr + pred_deriv * ar_step
+
+                remainder = tau % ar_step
+                if remainder > 0:
+                    t_curr = n_steps * ar_step
+                    mask = torch.from_numpy(
+                        shared_data["masks"].get(
+                            (sample_idx, t_curr), shared_data["masks"][(sample_idx, 0)]
+                        )
+                    ).to(device)
+                    u_curr_norm = (u_curr - u_mean) / u_std
+                    start_time_norm = (float(t_curr) - start_time_mean) / start_time_std
+                    time_diff_norm = (float(remainder) - time_diff_mean) / time_diff_std
+                    time_feats = torch.full(
+                        (nc, 2), 0.0, device=device, dtype=torch.float32
+                    )
+                    time_feats[:, 0] = start_time_norm
+                    time_feats[:, 1] = time_diff_norm
+                    inputs = torch.cat(
+                        [u_curr_norm, time_feats, mask.unsqueeze(-1)], dim=-1
+                    ).unsqueeze(0)
+                    pred = model(
+                        latent_grid, coords_norm, inputs, coords_norm, enc, dec
+                    )
+                    pred_deriv = pred.squeeze(0) * der_std + der_mean
+                    u_curr = u_curr + pred_deriv * remainder
 
                 u_pred = u_curr
 
@@ -887,7 +871,7 @@ def autoregressive_rollout(
     return aggregated
 
 
-def plot_rollout_results(rollout_results, save_path, time_step=3):
+def plot_rollout_results(rollout_results, save_path):
     taus = sorted(rollout_results.keys())
 
     rel_l1 = [rollout_results[t]["rel_l1"] for t in taus]
@@ -996,7 +980,6 @@ def plot_rollout_results(rollout_results, save_path, time_step=3):
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)
     plt.close()
-    log_info(f"Rollout results saved: {save_path}")
 
 
 def plot_loss_curves(
@@ -1039,6 +1022,7 @@ def plot_loss_curves(
     log_info(f"Loss curves saved: {save_path}")
 
 
+"""
 def plot_predictions(
     model,
     loader,
@@ -1133,6 +1117,260 @@ def plot_predictions(
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close()
     log_info(f"Predictions saved: {save_path}")
+"""
+
+
+def plot_predictions_detailed(
+    model,
+    shared_data,
+    sample_indices,
+    stats,
+    latent_grid,
+    encoder_nbrs,
+    decoder_nbrs,
+    device,
+    save_path,
+    lags=[3, 30, 180],
+    n_samples=3,
+    ar_step=3,
+):
+    model.eval()
+
+    u_mean = stats["u_mean"].to(device)
+    u_std = stats["u_std"].to(device)
+    der_mean = stats["der_mean"].to(device)
+    der_std = stats["der_std"].to(device)
+    start_time_mean = stats["start_time_mean"]
+    start_time_std = stats["start_time_std"]
+    time_diff_mean = stats["time_diff_mean"]
+    time_diff_std = stats["time_diff_std"]
+
+    coord_min = torch.tensor(
+        shared_data["coord_min"], device=device, dtype=torch.float32
+    )
+    coord_max = torch.tensor(
+        shared_data["coord_max"], device=device, dtype=torch.float32
+    )
+
+    n_timesteps = shared_data["n_timesteps"]
+    max_lag = max(lags)
+    max_valid_t = n_timesteps - max_lag - 1
+
+    rng = np.random.default_rng()
+    chosen_samples = rng.choice(
+        sample_indices, size=min(n_samples, len(sample_indices)), replace=False
+    )
+    chosen_t_starts = rng.integers(0, max_valid_t, size=n_samples)
+
+    fig = plt.figure(figsize=(28, 6 * n_samples))
+
+    for row_idx, (sample_idx, t_start) in enumerate(
+        zip(chosen_samples, chosen_t_starts)
+    ):
+        coords_np = shared_data["coords"][sample_idx]
+        coords = torch.from_numpy(coords_np).to(device)
+        coords_norm = 2.0 * (coords - coord_min) / (coord_max - coord_min) - 1.0
+        nc = coords.shape[0]
+
+        enc = [
+            {k: v.to(device) for k, v in s.items()} for s in encoder_nbrs[sample_idx]
+        ]
+        dec = [
+            {k: v.to(device) for k, v in s.items()} for s in decoder_nbrs[sample_idx]
+        ]
+
+        u_t = torch.from_numpy(shared_data["fields"][(sample_idx, t_start)]).to(device)
+        mask_t = shared_data["masks"][(sample_idx, t_start)]
+
+        n_cols = 2 + len(lags) * 4
+        base_idx = row_idx * n_cols
+
+        ax_mesh = fig.add_subplot(n_samples, n_cols, base_idx + 1)
+        ax_mesh.scatter(coords_np[:, 0], coords_np[:, 1], c="gray", s=0.3, alpha=0.5)
+        ax_mesh.scatter(
+            coords_np[mask_t > 0.5, 0],
+            coords_np[mask_t > 0.5, 1],
+            c="lime",
+            s=1,
+            alpha=0.8,
+        )
+        ax_mesh.set_title(f"Sample {sample_idx}\nMesh + Drone Mask")
+        ax_mesh.set_aspect("equal")
+        ax_mesh.axis("off")
+
+        ax_ctx = fig.add_subplot(n_samples, n_cols, base_idx + 2)
+        u_t_np = u_t.cpu().numpy()
+        ctx_text = f"t={t_start}\n"
+        ctx_text += f"VY: [{u_t_np[:, 1].min():.2f}, {u_t_np[:, 1].max():.2f}]\n"
+        ctx_text += f"PS: [{u_t_np[:, 2].min():.2f}, {u_t_np[:, 2].max():.2f}]\n"
+        ctx_text += f"PG: [{u_t_np[:, 3].min():.2f}, {u_t_np[:, 3].max():.2f}]"
+        ax_ctx.text(
+            0.5,
+            0.5,
+            ctx_text,
+            ha="center",
+            va="center",
+            fontsize=10,
+            family="monospace",
+        )
+        ax_ctx.set_title("Context (VY, PS, PG)")
+        ax_ctx.axis("off")
+
+        for lag_idx, lag in enumerate(lags):
+            t_out = t_start + lag
+            u_gt = torch.from_numpy(shared_data["fields"][(sample_idx, t_out)]).to(
+                device
+            )
+
+            #if lag <= 30:
+            if lag == 3:
+                u_curr = u_t.clone()
+                u_curr_norm = (u_curr - u_mean) / u_std
+                st_norm = (float(t_start) - start_time_mean) / start_time_std
+                td_norm = (float(lag) - time_diff_mean) / time_diff_std
+                mask_tensor = torch.from_numpy(mask_t).to(device)
+                time_feats = torch.zeros((nc, 2), device=device, dtype=torch.float32)
+                time_feats[:, 0] = st_norm
+                time_feats[:, 1] = td_norm
+                inputs = torch.cat(
+                    [u_curr_norm, time_feats, mask_tensor.unsqueeze(-1)], dim=-1
+                ).unsqueeze(0)
+
+                with torch.no_grad():
+                    pred = model(
+                        latent_grid, coords_norm, inputs, coords_norm, enc, dec
+                    )
+                pred_deriv = pred.squeeze(0) * der_std + der_mean
+                u_pred = u_curr + pred_deriv * lag
+            elif lag < 3:
+                raise NotImplementedError
+            else:
+                u_curr = u_t.clone()
+                n_steps = lag // ar_step
+
+                for step in range(n_steps):
+                    t_curr = t_start + step * ar_step
+                    mask_curr = shared_data["masks"].get((sample_idx, t_curr), mask_t)
+                    mask_tensor = torch.from_numpy(mask_curr).to(device)
+
+                    u_curr_norm = (u_curr - u_mean) / u_std
+                    st_norm = (float(t_curr) - start_time_mean) / start_time_std
+                    td_norm = (float(ar_step) - time_diff_mean) / time_diff_std
+                    time_feats = torch.zeros(
+                        (nc, 2), device=device, dtype=torch.float32
+                    )
+                    time_feats[:, 0] = st_norm
+                    time_feats[:, 1] = td_norm
+                    inputs = torch.cat(
+                        [u_curr_norm, time_feats, mask_tensor.unsqueeze(-1)], dim=-1
+                    ).unsqueeze(0)
+
+                    with torch.no_grad():
+                        pred = model(
+                            latent_grid, coords_norm, inputs, coords_norm, enc, dec
+                        )
+                    pred_deriv = pred.squeeze(0) * der_std + der_mean
+                    u_curr = u_curr + pred_deriv * ar_step
+
+                remainder = lag % ar_step
+                if remainder > 0:
+                    t_curr = t_start + n_steps * ar_step
+                    mask_curr = shared_data["masks"].get((sample_idx, t_curr), mask_t)
+                    mask_tensor = torch.from_numpy(mask_curr).to(device)
+                    u_curr_norm = (u_curr - u_mean) / u_std
+                    st_norm = (float(t_curr) - start_time_mean) / start_time_std
+                    td_norm = (float(remainder) - time_diff_mean) / time_diff_std
+                    time_feats = torch.zeros(
+                        (nc, 2), device=device, dtype=torch.float32
+                    )
+                    time_feats[:, 0] = st_norm
+                    time_feats[:, 1] = td_norm
+                    inputs = torch.cat(
+                        [u_curr_norm, time_feats, mask_tensor.unsqueeze(-1)], dim=-1
+                    ).unsqueeze(0)
+                    with torch.no_grad():
+                        pred = model(
+                            latent_grid, coords_norm, inputs, coords_norm, enc, dec
+                        )
+                    pred_deriv = pred.squeeze(0) * der_std + der_mean
+                    u_curr = u_curr + pred_deriv * remainder
+
+                u_pred = u_curr
+
+            u_input_vx = u_t[:, 0].cpu().numpy()
+            u_gt_vx = u_gt[:, 0].cpu().numpy()
+            u_pred_vx = u_pred[:, 0].cpu().numpy()
+            err_vx = np.abs(u_gt_vx - u_pred_vx)
+
+            col_offset = 3 + lag_idx * 4
+            vmin = min(u_input_vx.min(), u_gt_vx.min(), u_pred_vx.min())
+            vmax = max(u_input_vx.max(), u_gt_vx.max(), u_pred_vx.max())
+
+            ax_in = fig.add_subplot(n_samples, n_cols, base_idx + col_offset)
+            sc = ax_in.scatter(
+                coords_np[:, 0],
+                coords_np[:, 1],
+                c=u_input_vx,
+                s=0.5,
+                cmap="RdBu_r",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax_in.set_title(f"VX u(t={t_start})")
+            ax_in.set_aspect("equal")
+            ax_in.axis("off")
+            plt.colorbar(sc, ax=ax_in, fraction=0.046, pad=0.02)
+
+            ax_gt = fig.add_subplot(n_samples, n_cols, base_idx + col_offset + 1)
+            sc = ax_gt.scatter(
+                coords_np[:, 0],
+                coords_np[:, 1],
+                c=u_gt_vx,
+                s=0.5,
+                cmap="RdBu_r",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            ax_gt.set_title(f"VX GT t+{lag}")
+            ax_gt.set_aspect("equal")
+            ax_gt.axis("off")
+            plt.colorbar(sc, ax=ax_gt, fraction=0.046, pad=0.02)
+
+            ax_pred = fig.add_subplot(n_samples, n_cols, base_idx + col_offset + 2)
+            sc = ax_pred.scatter(
+                coords_np[:, 0],
+                coords_np[:, 1],
+                c=u_pred_vx,
+                s=0.5,
+                cmap="RdBu_r",
+                vmin=vmin,
+                vmax=vmax,
+            )
+            method = "direct" if lag <= 30 else f"AR({ar_step})"
+            ax_pred.set_title(f"VX Pred [{method}]")
+            ax_pred.set_aspect("equal")
+            ax_pred.axis("off")
+            plt.colorbar(sc, ax=ax_pred, fraction=0.046, pad=0.02)
+
+            ax_err = fig.add_subplot(n_samples, n_cols, base_idx + col_offset + 3)
+            sc = ax_err.scatter(
+                coords_np[:, 0],
+                coords_np[:, 1],
+                c=err_vx,
+                s=0.5,
+                cmap="hot",
+                vmin=0,
+                vmax=np.percentile(err_vx, 95),
+            )
+            rel_err = err_vx.sum() / (np.abs(u_gt_vx).sum() + 1e-8)
+            ax_err.set_title(f"L1 Err ({rel_err * 100:.1f}%)")
+            ax_err.set_aspect("equal")
+            ax_err.axis("off")
+            plt.colorbar(sc, ax=ax_err, fraction=0.046, pad=0.02)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close()
 
 
 def save_config(config, model_config, train_config, save_path):
@@ -1158,7 +1396,6 @@ def save_config(config, model_config, train_config, save_path):
             "val_size": train_config.val_size,
             "test_size": train_config.test_size,
             "max_time_diff": train_config.max_time_diff,
-            "time_step": train_config.time_step,
             "pairs_per_sample": train_config.pairs_per_sample,
             "n_epochs": train_config.n_epochs,
             "lr": train_config.lr,
@@ -1177,8 +1414,6 @@ def save_config(config, model_config, train_config, save_path):
 
     with open(save_path, "w") as f:
         json.dump(config_dict, f, indent=2)
-
-    log_info(f"Config saved: {save_path}")
 
 
 def save_results_json(results, rollout_results, save_path):
@@ -1260,7 +1495,7 @@ def main():
         f"test={train_config.test_size}"
     )
     log_info(
-        f"Time: max_diff={train_config.max_time_diff}, step={train_config.time_step}, "
+        f"Time: max_diff={train_config.max_time_diff}, "
         f"pairs_per_sample={train_config.pairs_per_sample}"
     )
     log_info(
@@ -1285,7 +1520,6 @@ def main():
         vtkhdf_path,
         train_idx,
         max_time_diff=train_config.max_time_diff,
-        time_step=train_config.time_step,
     )
 
     log_info(f"u_mean:   {stats['u_mean']}")
@@ -1299,14 +1533,11 @@ def main():
         f"time_diff:  mean={stats['time_diff_mean']:.2f}, std={stats['time_diff_std']:.2f}"
     )
 
-    max_rollout_tau = max(train_config.eval_tau_values)
     all_indices = train_idx + val_idx + test_idx
     shared_data = load_shared_data(
         vtkhdf_path,
         neighbors_path,
         all_indices,
-        train_config.max_time_diff,
-        train_config.time_step,
         n_timesteps=990,
     )
 
@@ -1327,7 +1558,6 @@ def main():
         val_idx,
         test_idx,
         max_time_diff=train_config.max_time_diff,
-        time_step=train_config.time_step,
         pairs_per_sample=train_config.pairs_per_sample,
         n_timesteps=n_timesteps,
         world_size=world_size,
@@ -1524,9 +1754,9 @@ def main():
             encoder_nbrs,
             decoder_nbrs,
             device,
-            time_step=train_config.time_step,
             eval_tau_values=train_config.eval_tau_values,
             direct_tau_max=train_config.direct_tau_max,
+            ar_step=1,
         )
 
         log_info(
@@ -1549,7 +1779,7 @@ def main():
         log_info("=" * 70)
         log_info("GraphViT results: +1=0.0811, +50=0.3495, +250=0.6357")
 
-        comparison_taus = [(3, 1), (51, 50), (249, 250)]
+        comparison_taus = [(3, 3), (30, 27), (249, 210)]
         for our_tau, paper_tau in comparison_taus:
             closest = min(rollout_results.keys(), key=lambda x: abs(x - our_tau))
             if closest in rollout_results:
@@ -1585,21 +1815,34 @@ def main():
             results_dir / "loss_curves.png",
             train_config.eval_every,
         )
-        plot_predictions(
+        plot_predictions_detailed(
             eval_model,
-            test_loader,
+            shared_data,
+            test_idx,
+            stats,
             latent_grid,
             encoder_nbrs,
             decoder_nbrs,
             device,
-            stats,
-            results_dir / "test_predictions.png",
-            n_samples=4,
+            results_dir / "detailed_predictions.png",
+            lags=[3, 30, 180],
+            n_samples=3,
+            ar_step=3,
         )
+        # plot_predictions(
+        #     eval_model,
+        #     test_loader,
+        #     latent_grid,
+        #     encoder_nbrs,
+        #     decoder_nbrs,
+        #     device,
+        #     stats,
+        #     results_dir / "test_predictions.png",
+        #     n_samples=4,
+        # )
         plot_rollout_results(
             rollout_results,
             results_dir / "rollout_results.png",
-            time_step=train_config.time_step,
         )
 
         save_results_json(results, rollout_results, results_dir / "results.json")
