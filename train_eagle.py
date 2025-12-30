@@ -17,6 +17,10 @@ import json
 
 from src.model.gaot import GAOT
 # from src.model.boat import BOAT as GAOT
+# TODO new train script that builds, caches trees on the fly
+# TODO neighbor lists cached
+# TODO dist attn inside model
+# TODO make simple comparison to GAOT
 from src.model.layers.magno import MAGNOConfig
 from src.model.layers.attn import TransformerConfig
 
