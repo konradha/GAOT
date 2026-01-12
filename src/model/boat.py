@@ -1,239 +1,40 @@
 import torch
 import torch.nn as nn
-import numpy as np
-from typing import Optional, Tuple, List, Dict, Union
+from typing import Optional, Tuple, List, Dict
 from dataclasses import dataclass, field
 
 from .layers.attn import Transformer, TransformerConfig
 from .layers.treecoder import (
-    LocalGeometry,
     HierarchicalGeometry,
-    LocalGeometryCache,
-    BallStatistics,
-    BallBlock,
-    TimeConditionedBallBlock,
-    BallPool,
-    BallUnpool,
-    BallGeometricEmbedding,
-    SwiGLU,
     HierarchicalEncoder,
-    HierarchicalDecoder
+    HierarchicalDecoder,
 )
 
 
 @dataclass
 class BOATConfig:
     hidden_dims: List[int] = field(default_factory=lambda: [64, 128, 256])
-    ball_sizes: List[int] = field(default_factory=lambda: [128, 128, 64])
+    ball_sizes: List[int] = field(default_factory=lambda: [128, 64, 32])
     strides: List[int] = field(default_factory=lambda: [2, 2])
     enc_num_heads: List[int] = field(default_factory=lambda: [4, 8, 16])
-    enc_depths: List[int] = field(default_factory=lambda: [2, 2, 4])
+    enc_depths: List[int] = field(default_factory=lambda: [2, 4, 4])
     dec_num_heads: List[int] = field(default_factory=lambda: [8, 4])
-    dec_depths: List[int] = field(default_factory=lambda: [2, 2])
+    dec_depths: List[int] = field(default_factory=lambda: [4, 2])
 
-    latent_grid_size: Tuple[int, int] = (64, 64)
+    latent_grid_size: Tuple[int, int] = (32, 32)
     latent_dim: int = 64
+
+    transformer: TransformerConfig = field(default_factory=lambda: TransformerConfig(
+        patch_size=2,
+        hidden_size=256,
+        num_layers=3,
+        positional_embedding="absolute",
+    ))
 
     coord_dim: int = 2
     rotation_angle: float = 45.0
     time_conditioned: bool = True
     dropout: float = 0.0
-
-    transformer: TransformerConfig = field(default_factory=TransformerConfig)
-
-
-class EncoderLevel(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        depth: int,
-        ball_size: int,
-        coord_dim: int = 2,
-        time_conditioned: bool = True,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.ball_size = ball_size
-        self.time_conditioned = time_conditioned
-        self.dim = dim
-
-        BlockClass = TimeConditionedBallBlock if time_conditioned else BallBlock
-        self.blocks = nn.ModuleList(
-            [
-                BlockClass(dim, num_heads, ball_size, coord_dim, dropout=dropout)
-                for _ in range(depth)
-            ]
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        pos: torch.Tensor,
-        stats: BallStatistics,
-        rot_perm: Optional[torch.Tensor] = None,
-        rot_inverse_perm: Optional[torch.Tensor] = None,
-        tau: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        n_original = stats.n_original
-        n_padded = stats.n_padded
-        device = x.device
-
-        x_perm = x
-        if x.shape[0] < n_padded:
-            pad = x_perm[-1:].expand(n_padded - x.shape[0], -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
-
-        pos_perm = pos
-        if pos.shape[0] < n_padded:
-            pad_pos = pos_perm[-1:].expand(n_padded - pos.shape[0], -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
-
-        rel_pos = stats.rel_pos
-
-        tau_perm = None
-        if tau is not None:
-            tau_perm = tau
-            if tau.shape[0] < n_padded:
-                tau_perm = torch.cat(
-                    [tau, tau[-1:].expand(n_padded - tau.shape[0], -1)], dim=0
-                )
-
-        for i, block in enumerate(self.blocks):
-            use_rot = (
-                rot_perm is not None and i % 2 == 1 and rot_perm.shape[0] >= n_original
-            )
-
-            if use_rot:
-                x_valid = x_perm[:n_original]
-                x_rot = x_valid[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    x_rot = torch.cat(
-                        [x_rot, x_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                pos_valid = pos_perm[:n_original]
-                pos_rot = pos_valid[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    pos_rot = torch.cat(
-                        [pos_rot, pos_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                rot_stats = BallStatistics.compute(
-                    pos[:n_original], rot_perm[:n_original], self.ball_size
-                )
-                rel_pos_rot = rot_stats.rel_pos
-
-                if self.time_conditioned and tau_perm is not None:
-                    tau_valid = tau_perm[:n_original]
-                    tau_rot = tau_valid[rot_perm[:n_original]]
-                    if n_padded > n_original:
-                        tau_rot = torch.cat(
-                            [tau_rot, tau_rot[-1:].expand(n_padded - n_original, -1)],
-                            dim=0,
-                        )
-                    x_rot = block(x_rot, rel_pos_rot, pos_rot, tau_rot)
-                else:
-                    x_rot = block(x_rot, rel_pos_rot, pos_rot)
-
-                x_out = x_rot[:n_original][rot_inverse_perm[:n_original]]
-                if n_padded > n_original:
-                    x_perm = torch.cat(
-                        [x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-                else:
-                    x_perm = x_out
-            else:
-                if self.time_conditioned and tau_perm is not None:
-                    x_perm = block(x_perm, rel_pos, pos_perm, tau_perm)
-                else:
-                    x_perm = block(x_perm, rel_pos, pos_perm)
-
-        return x_perm[:n_original]
-
-
-class DecoderLevel(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        depth: int,
-        ball_size: int,
-        coord_dim: int = 2,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.ball_size = ball_size
-        self.dim = dim
-
-        self.blocks = nn.ModuleList(
-            [
-                BallBlock(dim, num_heads, ball_size, coord_dim, dropout=dropout)
-                for _ in range(depth)
-            ]
-        )
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        pos: torch.Tensor,
-        stats: BallStatistics,
-        rot_perm: Optional[torch.Tensor] = None,
-        rot_inverse_perm: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        n_original = stats.n_original
-        n_padded = stats.n_padded
-
-        x_perm = x
-        if x.shape[0] < n_padded:
-            pad = x_perm[-1:].expand(n_padded - x.shape[0], -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
-
-        pos_perm = pos
-        if pos.shape[0] < n_padded:
-            pad_pos = pos_perm[-1:].expand(n_padded - pos.shape[0], -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
-
-        rel_pos = stats.rel_pos
-
-        for i, block in enumerate(self.blocks):
-            use_rot = (
-                rot_perm is not None and i % 2 == 1 and rot_perm.shape[0] >= n_original
-            )
-
-            if use_rot:
-                x_valid = x_perm[:n_original]
-                x_rot = x_valid[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    x_rot = torch.cat(
-                        [x_rot, x_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                pos_valid = pos_perm[:n_original]
-                pos_rot = pos_valid[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    pos_rot = torch.cat(
-                        [pos_rot, pos_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                rot_stats = BallStatistics.compute(
-                    pos[:n_original], rot_perm[:n_original], self.ball_size
-                )
-                rel_pos_rot = rot_stats.rel_pos
-
-                x_rot = block(x_rot, rel_pos_rot, pos_rot)
-
-                x_out = x_rot[:n_original][rot_inverse_perm[:n_original]]
-                if n_padded > n_original:
-                    x_perm = torch.cat(
-                        [x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-                else:
-                    x_perm = x_out
-            else:
-                x_perm = block(x_perm, rel_pos, pos_perm)
-
-        return x_perm[:n_original]
 
 
 class BOAT(nn.Module):
@@ -298,7 +99,7 @@ class BOAT(nn.Module):
             dropout=config.dropout,
         )
 
-        self.geom_cache = LocalGeometryCache(max_size=256)
+        self._geom_cache: Dict[int, HierarchicalGeometry] = {}
 
     def _get_patch_positions(self, latent_grid_size: Tuple[int, int]):
         H, W = latent_grid_size
@@ -331,17 +132,12 @@ class BOAT(nn.Module):
         self,
         pos: torch.Tensor,
         batch_idx: torch.Tensor,
-        use_cache: bool = True,
+        sample_idx: Optional[int] = None,
     ) -> HierarchicalGeometry:
-        if use_cache:
-            return self.geom_cache.get_hierarchical(
-                pos,
-                batch_idx,
-                self.config.ball_sizes,
-                self.config.strides,
-                self.config.rotation_angle,
-            )
-        return HierarchicalGeometry.build(
+        if sample_idx is not None and sample_idx in self._geom_cache:
+            return self._geom_cache[sample_idx]
+
+        geom = HierarchicalGeometry.build(
             pos,
             batch_idx,
             self.config.ball_sizes,
@@ -349,13 +145,20 @@ class BOAT(nn.Module):
             self.config.rotation_angle,
         )
 
+        if sample_idx is not None:
+            self._geom_cache[sample_idx] = geom
+
+        return geom
+
+    def clear_geometry_cache(self):
+        self._geom_cache.clear()
+
     def process_latent(self, latent: torch.Tensor) -> torch.Tensor:
         batch_size = latent.shape[0]
         H, W = self.config.latent_grid_size
         C = self.config.latent_dim
         P = self.patch_size
 
-        assert H % P == 0 and W % P == 0
         num_patches_H = H // P
         num_patches_W = W // P
 
@@ -395,6 +198,7 @@ class BOAT(nn.Module):
         batch_idx: Optional[torch.Tensor] = None,
         tau: Optional[torch.Tensor] = None,
         hier_geom: Optional[HierarchicalGeometry] = None,
+        sample_idx: Optional[int] = None,
     ) -> torch.Tensor:
         n = pos.shape[0]
         device = pos.device
@@ -403,7 +207,7 @@ class BOAT(nn.Module):
             batch_idx = torch.zeros(n, dtype=torch.long, device=device)
 
         if hier_geom is None:
-            hier_geom = self.get_geometry(pos, batch_idx)
+            hier_geom = self.get_geometry(pos, batch_idx, sample_idx)
 
         if tau is not None:
             if tau.dim() == 0:
@@ -464,6 +268,7 @@ class BOATForPDE(BOAT):
         u_mean: Optional[torch.Tensor] = None,
         u_std: Optional[torch.Tensor] = None,
         extra_features: Optional[torch.Tensor] = None,
+        sample_idx: Optional[int] = None,
     ) -> torch.Tensor:
         if u_mean is not None and u_std is not None:
             u_norm = (u - u_mean) / u_std
@@ -475,7 +280,7 @@ class BOATForPDE(BOAT):
         else:
             features = u_norm
 
-        return self.forward(pos, features, batch_idx, tau)
+        return self.forward(pos, features, batch_idx, tau, sample_idx=sample_idx)
 
     def rollout(
         self,
@@ -487,6 +292,7 @@ class BOATForPDE(BOAT):
         u_std: Optional[torch.Tensor] = None,
         der_stats: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None,
         extra_features: Optional[torch.Tensor] = None,
+        sample_idx: Optional[int] = None,
     ) -> List[torch.Tensor]:
         n = pos.shape[0]
         device = pos.device
@@ -494,7 +300,7 @@ class BOATForPDE(BOAT):
         if batch_idx is None:
             batch_idx = torch.zeros(n, dtype=torch.long, device=device)
 
-        hier_geom = self.get_geometry(pos, batch_idx, use_cache=True)
+        hier_geom = self.get_geometry(pos, batch_idx, sample_idx)
 
         u_current = u_init.clone()
         trajectory = [u_init]

@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple
-import hashlib
 
 from .kernels import build_balltree_with_rotation
-from .ball_gemb import BallStatistics, BallGeometricEmbedding, HierarchicalBallStatistics
+from .ball_gemb import BallStatistics, BallGeometricEmbedding
 
 
 @dataclass
@@ -50,13 +49,15 @@ class HierarchicalGeometry:
     inverse_perm: torch.Tensor
     rot_perm: torch.Tensor
     rot_inverse_perm: torch.Tensor
-    
+
     level_stats: List[BallStatistics]
     level_pos: List[torch.Tensor]
     level_n: List[int]
     level_perms: List[torch.Tensor]
     level_inverse_perms: List[torch.Tensor]
-    
+    level_rot_perms: List[torch.Tensor]
+    level_rot_inverse_perms: List[torch.Tensor]
+
     ball_sizes: List[int]
     strides: List[int]
     n_original: int
@@ -84,6 +85,8 @@ class HierarchicalGeometry:
         level_n = [n_original]
         level_perms = [perm]
         level_inverse_perms = [inverse_perm]
+        level_rot_perms = [rot_perm]
+        level_rot_inverse_perms = [rot_inverse_perm]
 
         current_pos = pos
         current_perm = perm
@@ -109,13 +112,20 @@ class HierarchicalGeometry:
 
                 current_pos = pooled_pos
                 current_n = n_pooled
-                current_perm = torch.arange(current_n, device=device)
-                current_inv_perm = torch.arange(current_n, device=device)
+
+                pooled_batch_idx = torch.zeros(current_n, dtype=torch.long, device=device)
+                p, ip, rp, rip = build_balltree_with_rotation(
+                    current_pos, pooled_batch_idx, rotation_angle
+                )
+                current_perm = p
+                current_inv_perm = ip
 
                 level_pos.append(current_pos)
                 level_n.append(current_n)
-                level_perms.append(current_perm)
-                level_inverse_perms.append(current_inv_perm)
+                level_perms.append(p)
+                level_inverse_perms.append(ip)
+                level_rot_perms.append(rp)
+                level_rot_inverse_perms.append(rip)
 
         return HierarchicalGeometry(
             perm=perm,
@@ -127,91 +137,14 @@ class HierarchicalGeometry:
             level_n=level_n,
             level_perms=level_perms,
             level_inverse_perms=level_inverse_perms,
+            level_rot_perms=level_rot_perms,
+            level_rot_inverse_perms=level_rot_inverse_perms,
             ball_sizes=ball_sizes,
             strides=strides,
             n_original=n_original,
             coord_dim=coord_dim,
             rotation_angle=rotation_angle,
         )
-
-
-class LocalGeometryCache:
-    def __init__(self, max_size: int = 256):
-        self.cache: Dict[str, LocalGeometry] = {}
-        self.hier_cache: Dict[str, HierarchicalGeometry] = {}
-        self.keys_order: List[str] = []
-        self.max_size = max_size
-
-    def _hash(self, pos: torch.Tensor, batch_idx: torch.Tensor) -> str:
-        n = pos.shape[0]
-        samples = [0, n // 3, 2 * n // 3, n - 1]
-        data = pos[samples].cpu().numpy().tobytes()
-        batch = batch_idx[samples].cpu().numpy().tobytes()
-        shape = f"{pos.shape}".encode()
-        return hashlib.md5(data + batch + shape).hexdigest()
-
-    def get(
-        self,
-        pos: torch.Tensor,
-        batch_idx: torch.Tensor,
-        ball_size: int,
-        rotation_angle: float,
-    ) -> LocalGeometry:
-        key = self._hash(pos, batch_idx) + f"_flat_{ball_size}"
-
-        if key in self.cache:
-            self.keys_order.remove(key)
-            self.keys_order.append(key)
-            return self.cache[key]
-
-        geom = LocalGeometry.build(pos, batch_idx, ball_size, rotation_angle)
-
-        if len(self.cache) >= self.max_size:
-            old_key = self.keys_order.pop(0)
-            if old_key in self.cache:
-                del self.cache[old_key]
-            if old_key in self.hier_cache:
-                del self.hier_cache[old_key]
-
-        self.cache[key] = geom
-        self.keys_order.append(key)
-
-        return geom
-
-    def get_hierarchical(
-        self,
-        pos: torch.Tensor,
-        batch_idx: torch.Tensor,
-        ball_sizes: List[int],
-        strides: List[int],
-        rotation_angle: float,
-    ) -> HierarchicalGeometry:
-        key = self._hash(pos, batch_idx) + f"_hier_{ball_sizes}_{strides}"
-
-        if key in self.hier_cache:
-            if key in self.keys_order:
-                self.keys_order.remove(key)
-            self.keys_order.append(key)
-            return self.hier_cache[key]
-
-        geom = HierarchicalGeometry.build(pos, batch_idx, ball_sizes, strides, rotation_angle)
-
-        if len(self.hier_cache) >= self.max_size:
-            old_key = self.keys_order.pop(0)
-            if old_key in self.cache:
-                del self.cache[old_key]
-            if old_key in self.hier_cache:
-                del self.hier_cache[old_key]
-
-        self.hier_cache[key] = geom
-        self.keys_order.append(key)
-
-        return geom
-
-    def clear(self):
-        self.cache.clear()
-        self.hier_cache.clear()
-        self.keys_order.clear()
 
 
 class SwiGLU(nn.Module):
@@ -355,6 +288,7 @@ class TimeConditionedBallBlock(nn.Module):
 
         return x
 
+
 class BallPool(nn.Module):
     def __init__(self, dim: int, stride: int = 2):
         super().__init__()
@@ -423,7 +357,7 @@ class BallUnpool(nn.Module):
         return out
 
 
-class EncoderLevel(nn.Module):
+class TreeEncoderLevel(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -433,12 +367,10 @@ class EncoderLevel(nn.Module):
         coord_dim: int = 2,
         time_conditioned: bool = True,
         dropout: float = 0.0,
-        use_rotation: bool = True,
     ):
         super().__init__()
         self.ball_size = ball_size
         self.time_conditioned = time_conditioned
-        self.use_rotation = use_rotation
 
         BlockClass = TimeConditionedBallBlock if time_conditioned else BallBlock
         self.blocks = nn.ModuleList([
@@ -457,44 +389,43 @@ class EncoderLevel(nn.Module):
     ) -> torch.Tensor:
         n_original = stats.n_original
         n_padded = stats.n_padded
-        device = x.device
 
-        perm = torch.arange(n_original, device=device)
+        x_work = x
+        if x.shape[0] < n_padded:
+            x_work = torch.cat([x_work, x_work[-1:].expand(n_padded - x.shape[0], -1)], dim=0)
 
-        x_perm = x
-        if n_padded > n_original:
-            pad = x_perm[-1:].expand(n_padded - n_original, -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
+        pos_work = pos
+        if pos.shape[0] < n_padded:
+            pos_work = torch.cat([pos_work, pos_work[-1:].expand(n_padded - pos.shape[0], -1)], dim=0)
 
-        pos_perm = pos
-        if n_padded > n_original:
-            pad_pos = pos_perm[-1:].expand(n_padded - n_original, -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
+        tau_work = None
+        if tau is not None:
+            tau_work = tau
+            if tau.shape[0] < n_padded:
+                tau_work = torch.cat([tau_work, tau_work[-1:].expand(n_padded - tau.shape[0], -1)], dim=0)
 
         rel_pos = stats.rel_pos
 
-        if tau is not None and n_padded > n_original:
-            tau_perm = torch.cat([tau, tau[-1:].expand(n_padded - n_original, -1)], dim=0)
-        else:
-            tau_perm = tau
-
         for i, block in enumerate(self.blocks):
-            use_rot = self.use_rotation and rot_perm is not None and i % 2 == 1
+            use_rot = rot_perm is not None and i % 2 == 1 and rot_perm.shape[0] >= n_original
 
             if use_rot:
-                x_rot = x_perm[:n_original][rot_perm[:n_original]]
+                x_valid = x_work[:n_original]
+                x_rot = x_valid[rot_perm[:n_original]]
                 if n_padded > n_original:
                     x_rot = torch.cat([x_rot, x_rot[-1:].expand(n_padded - n_original, -1)], dim=0)
 
-                pos_rot = pos_perm[:n_original][rot_perm[:n_original]]
+                pos_valid = pos_work[:n_original]
+                pos_rot = pos_valid[rot_perm[:n_original]]
                 if n_padded > n_original:
                     pos_rot = torch.cat([pos_rot, pos_rot[-1:].expand(n_padded - n_original, -1)], dim=0)
 
                 rot_stats = BallStatistics.compute(pos[:n_original], rot_perm[:n_original], self.ball_size)
                 rel_pos_rot = rot_stats.rel_pos
 
-                if self.time_conditioned and tau is not None:
-                    tau_rot = tau_perm[:n_original][rot_perm[:n_original]]
+                if self.time_conditioned and tau_work is not None:
+                    tau_valid = tau_work[:n_original]
+                    tau_rot = tau_valid[rot_perm[:n_original]]
                     if n_padded > n_original:
                         tau_rot = torch.cat([tau_rot, tau_rot[-1:].expand(n_padded - n_original, -1)], dim=0)
                     x_rot = block(x_rot, rel_pos_rot, pos_rot, tau_rot)
@@ -503,19 +434,19 @@ class EncoderLevel(nn.Module):
 
                 x_out = x_rot[:n_original][rot_inverse_perm[:n_original]]
                 if n_padded > n_original:
-                    x_perm = torch.cat([x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0)
+                    x_work = torch.cat([x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0)
                 else:
-                    x_perm = x_out
+                    x_work = x_out
             else:
-                if self.time_conditioned and tau is not None:
-                    x_perm = block(x_perm, rel_pos, pos_perm, tau_perm)
+                if self.time_conditioned and tau_work is not None:
+                    x_work = block(x_work, rel_pos, pos_work, tau_work)
                 else:
-                    x_perm = block(x_perm, rel_pos, pos_perm)
+                    x_work = block(x_work, rel_pos, pos_work)
 
-        return x_perm[:n_original]
+        return x_work[:n_original]
 
 
-class DecoderLevel(nn.Module):
+class TreeDecoderLevel(nn.Module):
     def __init__(
         self,
         dim: int,
@@ -524,11 +455,9 @@ class DecoderLevel(nn.Module):
         ball_size: int,
         coord_dim: int = 2,
         dropout: float = 0.0,
-        use_rotation: bool = True,
     ):
         super().__init__()
         self.ball_size = ball_size
-        self.use_rotation = use_rotation
 
         self.blocks = nn.ModuleList([
             BallBlock(dim, num_heads, ball_size, coord_dim, dropout=dropout)
@@ -545,46 +474,45 @@ class DecoderLevel(nn.Module):
     ) -> torch.Tensor:
         n_original = stats.n_original
         n_padded = stats.n_padded
-        device = x.device
 
-        x_perm = x
-        if n_padded > n_original:
-            pad = x_perm[-1:].expand(n_padded - n_original, -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
+        x_work = x
+        if x.shape[0] < n_padded:
+            x_work = torch.cat([x_work, x_work[-1:].expand(n_padded - x.shape[0], -1)], dim=0)
 
-        pos_perm = pos
-        if n_padded > n_original:
-            pad_pos = pos_perm[-1:].expand(n_padded - n_original, -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
+        pos_work = pos
+        if pos.shape[0] < n_padded:
+            pos_work = torch.cat([pos_work, pos_work[-1:].expand(n_padded - pos.shape[0], -1)], dim=0)
 
         rel_pos = stats.rel_pos
 
         for i, block in enumerate(self.blocks):
-            use_rot = self.use_rotation and rot_perm is not None and i % 2 == 1
+            use_rot = rot_perm is not None and i % 2 == 1 and rot_perm.shape[0] >= n_original
 
-            if use_rot and n_original == rot_perm.shape[0]:
-                x_rot = x_perm[:n_original][rot_perm]
+            if use_rot:
+                x_valid = x_work[:n_original]
+                x_rot = x_valid[rot_perm[:n_original]]
                 if n_padded > n_original:
                     x_rot = torch.cat([x_rot, x_rot[-1:].expand(n_padded - n_original, -1)], dim=0)
 
-                pos_rot = pos_perm[:n_original][rot_perm]
+                pos_valid = pos_work[:n_original]
+                pos_rot = pos_valid[rot_perm[:n_original]]
                 if n_padded > n_original:
                     pos_rot = torch.cat([pos_rot, pos_rot[-1:].expand(n_padded - n_original, -1)], dim=0)
 
-                rot_stats = BallStatistics.compute(pos[:n_original], rot_perm, self.ball_size)
+                rot_stats = BallStatistics.compute(pos[:n_original], rot_perm[:n_original], self.ball_size)
                 rel_pos_rot = rot_stats.rel_pos
 
                 x_rot = block(x_rot, rel_pos_rot, pos_rot)
 
-                x_out = x_rot[:n_original][rot_inverse_perm]
+                x_out = x_rot[:n_original][rot_inverse_perm[:n_original]]
                 if n_padded > n_original:
-                    x_perm = torch.cat([x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0)
+                    x_work = torch.cat([x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0)
                 else:
-                    x_perm = x_out
+                    x_work = x_out
             else:
-                x_perm = block(x_perm, rel_pos, pos_perm)
+                x_work = block(x_work, rel_pos, pos_work)
 
-        return x_perm[:n_original]
+        return x_work[:n_original]
 
 
 class HierarchicalEncoder(nn.Module):
@@ -612,8 +540,12 @@ class HierarchicalEncoder(nn.Module):
         self.latent_tokens = latent_grid_size[0] * latent_grid_size[1]
         self.latent_dim = latent_dim
 
-        self.geo_embed = BallGeometricEmbedding(coord_dim, 64, hidden_dims[0])
-        self.input_proj = nn.Linear(in_channels + hidden_dims[0], hidden_dims[0])
+        self.geo_embeds = nn.ModuleList([
+            BallGeometricEmbedding(coord_dim, 64, hidden_dims[i])
+            for i in range(self.num_levels)
+        ])
+
+        self.input_proj = nn.Linear(in_channels, hidden_dims[0])
 
         self.levels = nn.ModuleList()
         self.pools = nn.ModuleList()
@@ -621,7 +553,7 @@ class HierarchicalEncoder(nn.Module):
 
         for i in range(self.num_levels):
             self.levels.append(
-                EncoderLevel(
+                TreeEncoderLevel(
                     dim=hidden_dims[i],
                     num_heads=enc_num_heads[i],
                     depth=enc_depths[i],
@@ -629,7 +561,6 @@ class HierarchicalEncoder(nn.Module):
                     coord_dim=coord_dim,
                     time_conditioned=time_conditioned,
                     dropout=dropout,
-                    use_rotation=True,
                 )
             )
 
@@ -649,21 +580,23 @@ class HierarchicalEncoder(nn.Module):
         hier_geom: HierarchicalGeometry,
         tau: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, List[torch.Tensor], List[torch.Tensor]]:
-        geo_feat = self.geo_embed(hier_geom.level_stats[0], hier_geom.inverse_perm)
-        x = self.input_proj(torch.cat([x, geo_feat], dim=-1))
+        x = self.input_proj(x)
 
         skip_features = []
         skip_positions = []
-        
+
         current_x = x
         current_pos = pos
         current_tau = tau
 
         for i in range(self.num_levels):
             stats = hier_geom.level_stats[i]
+            rot_perm = hier_geom.level_rot_perms[i]
+            rot_inv = hier_geom.level_rot_inverse_perms[i]
+            inv_perm = hier_geom.level_inverse_perms[i]
 
-            rot_perm = hier_geom.rot_perm if i == 0 else None
-            rot_inv = hier_geom.rot_inverse_perm if i == 0 else None
+            geo_feat = self.geo_embeds[i](stats, inv_perm)
+            current_x = current_x + geo_feat
 
             current_x = self.levels[i](
                 current_x,
@@ -728,12 +661,13 @@ class HierarchicalDecoder(nn.Module):
 
         self.from_latent = nn.Linear(latent_dim, hidden_dims[-1])
 
-        self.unpools = nn.ModuleList()
-        self.levels = nn.ModuleList()
-
         rev_hidden_dims = hidden_dims[::-1]
         rev_ball_sizes = ball_sizes[::-1]
         rev_strides = strides[::-1]
+
+        self.unpools = nn.ModuleList()
+        self.levels = nn.ModuleList()
+        self.geo_embeds = nn.ModuleList()
 
         for i in range(self.num_dec_levels):
             in_dim = rev_hidden_dims[i]
@@ -745,7 +679,7 @@ class HierarchicalDecoder(nn.Module):
 
             ball_size = rev_ball_sizes[i + 1] if i + 1 < len(rev_ball_sizes) else rev_ball_sizes[-1]
             self.levels.append(
-                DecoderLevel(
+                TreeDecoderLevel(
                     dim=out_dim,
                     num_heads=dec_num_heads[i],
                     depth=dec_depths[i],
@@ -754,6 +688,8 @@ class HierarchicalDecoder(nn.Module):
                     dropout=dropout,
                 )
             )
+
+            self.geo_embeds.append(BallGeometricEmbedding(coord_dim, 64, out_dim))
 
         final_dim = rev_hidden_dims[-1] if rev_hidden_dims else hidden_dims[0]
         self.out_proj = nn.Linear(final_dim, out_channels)
@@ -778,6 +714,9 @@ class HierarchicalDecoder(nn.Module):
         rev_skip_features = skip_features[::-1]
         rev_skip_positions = skip_positions[::-1]
         rev_stats = hier_geom.level_stats[::-1]
+        rev_rot_perms = hier_geom.level_rot_perms[::-1]
+        rev_rot_inv_perms = hier_geom.level_rot_inverse_perms[::-1]
+        rev_inv_perms = hier_geom.level_inverse_perms[::-1]
 
         for i in range(self.num_dec_levels):
             skip_idx = i + 1
@@ -788,11 +727,13 @@ class HierarchicalDecoder(nn.Module):
 
                 current_x = self.unpools[i](current_x, skip, target_n)
 
-                stats_idx = skip_idx if skip_idx < len(rev_stats) else -1
-                stats = rev_stats[stats_idx]
+                stats = rev_stats[skip_idx]
+                rot_perm = rev_rot_perms[skip_idx]
+                rot_inv = rev_rot_inv_perms[skip_idx]
+                inv_perm = rev_inv_perms[skip_idx]
 
-                rot_perm = hier_geom.rot_perm if skip_idx == len(rev_skip_features) - 1 else None
-                rot_inv = hier_geom.rot_inverse_perm if skip_idx == len(rev_skip_features) - 1 else None
+                geo_feat = self.geo_embeds[i](stats, inv_perm)
+                current_x = current_x + geo_feat
 
                 current_x = self.levels[i](
                     current_x,
@@ -803,243 +744,3 @@ class HierarchicalDecoder(nn.Module):
                 )
 
         return self.out_proj(current_x)
-
-
-class TreeEncoder(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_dim: int,
-        latent_dim: int,
-        latent_size: Tuple[int, int],
-        num_heads: int = 8,
-        num_layers: int = 4,
-        ball_size: int = 64,
-        coord_dim: int = 2,
-        time_conditioned: bool = True,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.hidden_dim = hidden_dim
-        self.latent_dim = latent_dim
-        self.latent_size = latent_size
-        self.latent_tokens = latent_size[0] * latent_size[1]
-        self.ball_size = ball_size
-        self.time_conditioned = time_conditioned
-
-        self.geo_embed = BallGeometricEmbedding(coord_dim, 64, hidden_dim)
-        self.input_proj = nn.Linear(in_channels + hidden_dim, hidden_dim)
-
-        BlockClass = TimeConditionedBallBlock if time_conditioned else BallBlock
-        self.blocks = nn.ModuleList(
-            [
-                BlockClass(hidden_dim, num_heads, ball_size, coord_dim, dropout=dropout)
-                for _ in range(num_layers)
-            ]
-        )
-
-        self.latent_tokens_param = nn.Parameter(
-            torch.randn(1, self.latent_tokens, hidden_dim) * 0.02
-        )
-
-        self.cross_attn_q = nn.Linear(hidden_dim, hidden_dim)
-        self.cross_attn_kv = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.cross_attn_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.cross_attn_norm = nn.LayerNorm(hidden_dim)
-        self.num_heads = num_heads
-
-        self.latent_proj = nn.Linear(hidden_dim, latent_dim)
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        pos: torch.Tensor,
-        local_geom: LocalGeometry,
-        tau: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        n_original = local_geom.n_original
-        n_padded = local_geom.n_padded
-        device = x.device
-
-        geo_feat = self.geo_embed(local_geom.ball_stats, local_geom.inverse_perm)
-        x = self.input_proj(torch.cat([x, geo_feat], dim=-1))
-
-        x_perm = x[local_geom.perm]
-        if n_padded > n_original:
-            pad = x_perm[-1:].expand(n_padded - n_original, -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
-
-        pos_perm = pos[local_geom.perm]
-        if n_padded > n_original:
-            pad_pos = pos_perm[-1:].expand(n_padded - n_original, -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
-
-        rel_pos = local_geom.ball_stats.rel_pos
-
-        if tau is not None:
-            tau_perm = tau[local_geom.perm]
-            if n_padded > n_original:
-                tau_perm = torch.cat(
-                    [tau_perm, tau_perm[-1:].expand(n_padded - n_original, -1)], dim=0
-                )
-
-        use_rotation = True
-        for i, block in enumerate(self.blocks):
-            if use_rotation and i % 2 == 1:
-                rot_perm = local_geom.rot_perm
-                rot_inv = local_geom.rot_inverse_perm
-
-                x_rot = x_perm[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    x_rot = torch.cat(
-                        [x_rot, x_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                pos_rot = pos_perm[rot_perm[:n_original]]
-                if n_padded > n_original:
-                    pos_rot = torch.cat(
-                        [pos_rot, pos_rot[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-
-                rot_stats = BallStatistics.compute(
-                    pos[:n_original], rot_perm[:n_original], self.ball_size
-                )
-                rel_pos_rot = rot_stats.rel_pos
-
-                if self.time_conditioned and tau is not None:
-                    tau_rot = tau_perm[rot_perm[:n_original]]
-                    if n_padded > n_original:
-                        tau_rot = torch.cat(
-                            [tau_rot, tau_rot[-1:].expand(n_padded - n_original, -1)],
-                            dim=0,
-                        )
-                    x_rot = block(x_rot, rel_pos_rot, pos_rot, tau_rot)
-                else:
-                    x_rot = block(x_rot, rel_pos_rot, pos_rot)
-
-                x_out = x_rot[:n_original][rot_inv[:n_original]]
-                if n_padded > n_original:
-                    x_perm = torch.cat(
-                        [x_out, x_out[-1:].expand(n_padded - n_original, -1)], dim=0
-                    )
-                else:
-                    x_perm = x_out
-            else:
-                if self.time_conditioned and tau is not None:
-                    x_perm = block(x_perm, rel_pos, pos_perm, tau_perm)
-                else:
-                    x_perm = block(x_perm, rel_pos, pos_perm)
-
-        x_valid = x_perm[:n_original]
-        x_orig = torch.empty_like(x_valid)
-        x_orig[local_geom.inverse_perm] = x_valid
-
-        latent = self.latent_tokens_param.expand(1, -1, -1).squeeze(0)
-
-        q = self.cross_attn_q(latent)
-        kv = self.cross_attn_kv(x_orig)
-        k, v = kv.chunk(2, dim=-1)
-
-        q = q.view(self.latent_tokens, self.num_heads, -1).transpose(0, 1)
-        k = k.view(n_original, self.num_heads, -1).transpose(0, 1)
-        v = v.view(n_original, self.num_heads, -1).transpose(0, 1)
-
-        attn_out = F.scaled_dot_product_attention(
-            q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
-        ).squeeze(0)
-        attn_out = attn_out.transpose(0, 1).reshape(self.latent_tokens, self.hidden_dim)
-
-        latent = self.cross_attn_norm(latent + self.cross_attn_proj(attn_out))
-        latent = self.latent_proj(latent)
-
-        return latent.unsqueeze(0)
-
-
-class TreeDecoder(nn.Module):
-    def __init__(
-        self,
-        latent_dim: int,
-        hidden_dim: int,
-        out_channels: int,
-        latent_size: Tuple[int, int],
-        num_heads: int = 8,
-        num_layers: int = 2,
-        ball_size: int = 64,
-        coord_dim: int = 2,
-        dropout: float = 0.0,
-    ):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.hidden_dim = hidden_dim
-        self.latent_size = latent_size
-        self.latent_tokens = latent_size[0] * latent_size[1]
-        self.ball_size = ball_size
-        self.num_heads = num_heads
-
-        self.latent_to_hidden = nn.Linear(latent_dim, hidden_dim)
-
-        self.query_proj = nn.Linear(coord_dim, hidden_dim)
-
-        self.cross_attn_q = nn.Linear(hidden_dim, hidden_dim)
-        self.cross_attn_kv = nn.Linear(hidden_dim, hidden_dim * 2)
-        self.cross_attn_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.cross_attn_norm = nn.LayerNorm(hidden_dim)
-
-        self.blocks = nn.ModuleList(
-            [
-                BallBlock(hidden_dim, num_heads, ball_size, coord_dim, dropout=dropout)
-                for _ in range(num_layers)
-            ]
-        )
-
-        self.out_proj = nn.Linear(hidden_dim, out_channels)
-
-    def forward(
-        self,
-        latent: torch.Tensor,
-        pos: torch.Tensor,
-        local_geom: LocalGeometry,
-    ) -> torch.Tensor:
-        n_original = local_geom.n_original
-        n_padded = local_geom.n_padded
-
-        latent = latent.squeeze(0)
-        latent = self.latent_to_hidden(latent)
-
-        query = self.query_proj(pos)
-
-        q = self.cross_attn_q(query)
-        kv = self.cross_attn_kv(latent)
-        k, v = kv.chunk(2, dim=-1)
-
-        q = q.view(n_original, self.num_heads, -1).transpose(0, 1)
-        k = k.view(self.latent_tokens, self.num_heads, -1).transpose(0, 1)
-        v = v.view(self.latent_tokens, self.num_heads, -1).transpose(0, 1)
-
-        attn_out = F.scaled_dot_product_attention(
-            q.unsqueeze(0), k.unsqueeze(0), v.unsqueeze(0)
-        ).squeeze(0)
-        attn_out = attn_out.transpose(0, 1).reshape(n_original, self.hidden_dim)
-
-        x = self.cross_attn_norm(query + self.cross_attn_proj(attn_out))
-
-        x_perm = x[local_geom.perm]
-        if n_padded > n_original:
-            pad = x_perm[-1:].expand(n_padded - n_original, -1)
-            x_perm = torch.cat([x_perm, pad], dim=0)
-
-        pos_perm = pos[local_geom.perm]
-        if n_padded > n_original:
-            pad_pos = pos_perm[-1:].expand(n_padded - n_original, -1)
-            pos_perm = torch.cat([pos_perm, pad_pos], dim=0)
-
-        rel_pos = local_geom.ball_stats.rel_pos
-
-        for block in self.blocks:
-            x_perm = block(x_perm, rel_pos, pos_perm)
-
-        x_valid = x_perm[:n_original]
-        x_out = torch.empty_like(x_valid)
-        x_out[local_geom.inverse_perm] = x_valid
-
-        return self.out_proj(x_out)
