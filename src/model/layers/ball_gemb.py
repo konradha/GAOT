@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, List
 
 
 @dataclass
@@ -63,6 +63,54 @@ class BallStatistics:
         )
 
 
+@dataclass
+class HierarchicalBallStatistics:
+    level_stats: List[BallStatistics]
+    level_centroids: List[torch.Tensor]
+    n_original: int
+    coord_dim: int
+
+    @staticmethod
+    def compute(
+        pos: torch.Tensor,
+        perm: torch.Tensor,
+        ball_sizes: List[int],
+        strides: List[int],
+    ) -> "HierarchicalBallStatistics":
+        n_original = pos.shape[0]
+        coord_dim = pos.shape[1]
+        device = pos.device
+
+        level_stats = []
+        level_centroids = []
+
+        current_pos = pos
+        current_perm = perm
+        current_n = n_original
+
+        for level_idx, ball_size in enumerate(ball_sizes):
+            stats = BallStatistics.compute(current_pos, current_perm, ball_size)
+            level_stats.append(stats)
+            level_centroids.append(stats.centroids.clone())
+
+            if level_idx < len(strides):
+                stride = strides[level_idx]
+                n_balls = stats.n_balls
+                n_pooled = (n_balls + stride - 1) // stride
+
+                current_pos = stats.centroids[:n_pooled * stride:stride] if n_pooled * stride <= n_balls else stats.centroids[::stride]
+                actual_pooled = current_pos.shape[0]
+                current_n = actual_pooled
+                current_perm = torch.arange(current_n, device=device)
+
+        return HierarchicalBallStatistics(
+            level_stats=level_stats,
+            level_centroids=level_centroids,
+            n_original=n_original,
+            coord_dim=coord_dim,
+        )
+
+
 class BallGeometricEmbedding(nn.Module):
     def __init__(self, coord_dim: int, hidden_dim: int, out_dim: int):
         super().__init__()
@@ -119,3 +167,28 @@ class BallGeometricEmbedding(nn.Module):
         output[inverse_perm] = geo_embed
 
         return output
+
+
+class HierarchicalBallGeometricEmbedding(nn.Module):
+    def __init__(self, coord_dim: int, hidden_dim: int, out_dims: List[int]):
+        super().__init__()
+        self.coord_dim = coord_dim
+        self.num_levels = len(out_dims)
+
+        self.embeddings = nn.ModuleList([
+            BallGeometricEmbedding(coord_dim, hidden_dim, out_dim)
+            for out_dim in out_dims
+        ])
+
+    def forward(
+        self,
+        hier_stats: HierarchicalBallStatistics,
+        inverse_perms: List[torch.Tensor],
+    ) -> List[torch.Tensor]:
+        outputs = []
+        for level_idx, (stats, inv_perm, embed) in enumerate(
+            zip(hier_stats.level_stats, inverse_perms, self.embeddings)
+        ):
+            out = embed(stats, inv_perm)
+            outputs.append(out)
+        return outputs

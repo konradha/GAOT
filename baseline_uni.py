@@ -137,25 +137,46 @@ def build_gaot_config():
 
 
 def build_boat_config():
-    return BOATConfig(
-        latent_tokens_size=(64, 64),
-        hidden_dim=128,
+	return BOATConfig(
+        hidden_dims=[64, 128, 256],
+        ball_sizes=[256, 128, 64],
+        strides=[4, 4],
+        enc_num_heads=[4, 8, 16],
+        enc_depths=[2, 4, 6],
+        dec_num_heads=[8, 4],
+        dec_depths=[4, 2],
+        latent_grid_size=(64, 64),
         latent_dim=64,
-        num_heads=8,
-        encoder_layers=4,
-        decoder_layers=2,
-        ball_size=64,
         coord_dim=2,
         rotation_angle=45.0,
-        time_conditioned=False,
+        time_conditioned=True,
         dropout=0.0,
         transformer=TransformerConfig(
             patch_size=2,
             hidden_size=256,
-            num_layers=3,
+            num_layers=6,
             positional_embedding="absolute",
         ),
     )
+    # return BOATConfig(
+    #     latent_tokens_size=(64, 64),
+    #     hidden_dim=128,
+    #     latent_dim=64,
+    #     num_heads=8,
+    #     encoder_layers=6,
+    #     decoder_layers=4,
+    #     ball_size=128,
+    #     coord_dim=2,
+    #     rotation_angle=45.0,
+    #     time_conditioned=True,
+    #     dropout=0.0,
+    #     transformer=TransformerConfig(
+    #         patch_size=2,
+    #         hidden_size=256,
+    #         num_layers=3,
+    #         positional_embedding="absolute",
+    #     ),
+    # )
 
 
 def compute_stats_single_step(vtkhdf_path, sample_indices, n_samples_for_stats=50):
@@ -430,38 +451,53 @@ class SingleStepTrainer:
 
         for _ in pbar:
             sample_idx = train_idx[np.random.randint(len(train_idx))]
-            t_in = np.random.randint(0, N_TIMESTEPS - 1)
-
-            u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
-            u_out = torch.from_numpy(fields[(sample_idx, t_in + 1)]).to(self.device)
-            mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
-
-            u_in_norm = (u_in - self.u_mean) / self.u_std
-            residual = u_out - u_in
-            target = (residual - self.res_mean) / self.res_std
-
-            inputs = torch.cat([u_in_norm, mask.unsqueeze(-1)], dim=-1)
-
-            optimizer.zero_grad()
 
             if self.model_type == "gaot":
+                t_ins = np.random.randint(0, N_TIMESTEPS - 1, size=TIME_PAIRS_PER_FORWARD)
+
+                u_in_list, u_out_list, mask_list = [], [], []
+                for t_in in t_ins:
+                    u_in_list.append(fields[(sample_idx, t_in)])
+                    u_out_list.append(fields[(sample_idx, t_in + 1)])
+                    mask_list.append(masks[(sample_idx, t_in)])
+
+                u_in = torch.from_numpy(np.stack(u_in_list)).to(self.device)
+                u_out = torch.from_numpy(np.stack(u_out_list)).to(self.device)
+                mask = torch.from_numpy(np.stack(mask_list)).to(self.device)
+
+                u_in_norm = (u_in - self.u_mean) / self.u_std
+                residual = u_out - u_in
+                target = (residual - self.res_mean) / self.res_std
+
+                inputs = torch.cat([u_in_norm, mask.unsqueeze(-1)], dim=-1)
+
                 coords_n = self.data["coords_norm"][sample_idx]
                 enc = self.data["encoder_nbrs"][sample_idx]
                 dec = self.data["decoder_nbrs"][sample_idx]
-                pred = self.model(
-                    self.data["latent_grid"],
-                    coords_n,
-                    inputs.unsqueeze(0),
-                    coords_n,
-                    enc,
-                    dec,
-                )
-                pred = pred.squeeze(0)
-            else:
-                pos = self.data["coords"][sample_idx]
-                pred = self.model(pos, inputs)
 
-            loss = weighted_rms_loss(pred, target)
+                optimizer.zero_grad()
+                pred = self.model(self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec)
+                loss = weighted_rms_loss(pred, target)
+            else:
+                t_in = np.random.randint(0, N_TIMESTEPS - 1)
+
+                u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
+                u_out = torch.from_numpy(fields[(sample_idx, t_in + 1)]).to(self.device)
+                mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
+
+                u_in_norm = (u_in - self.u_mean) / self.u_std
+                residual = u_out - u_in
+                target = (residual - self.res_mean) / self.res_std
+
+                inputs = torch.cat([u_in_norm, mask.unsqueeze(-1)], dim=-1)
+
+                pos = self.data["coords"][sample_idx]
+                tau_val = torch.ones(pos.shape[0], 1, device=self.device)
+
+                optimizer.zero_grad()
+                pred = self.model(pos, inputs, tau=tau_val)
+                loss = weighted_rms_loss(pred, target)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10.0)
             optimizer.step()
@@ -488,19 +524,9 @@ class SingleStepTrainer:
             sample_idx = sample_indices[np.random.randint(len(sample_indices))]
             t_in = np.random.randint(0, N_TIMESTEPS - 1)
 
-            u_in = (
-                torch.from_numpy(fields[(sample_idx, t_in)])
-                .unsqueeze(0)
-                .to(self.device)
-            )
-            u_out = (
-                torch.from_numpy(fields[(sample_idx, t_in + 1)])
-                .unsqueeze(0)
-                .to(self.device)
-            )
-            mask = (
-                torch.from_numpy(masks[(sample_idx, t_in)]).unsqueeze(0).to(self.device)
-            )
+            u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
+            u_out = torch.from_numpy(fields[(sample_idx, t_in + 1)]).to(self.device)
+            mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
 
             u_in_norm = (u_in - self.u_mean) / self.u_std
             residual = u_out - u_in
@@ -513,20 +539,27 @@ class SingleStepTrainer:
                 enc = self.data["encoder_nbrs"][sample_idx]
                 dec = self.data["decoder_nbrs"][sample_idx]
                 pred = self.model(
-                    self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec
+                    self.data["latent_grid"],
+                    coords_n,
+                    inputs.unsqueeze(0),
+                    coords_n,
+                    enc,
+                    dec,
                 )
+                pred = pred.squeeze(0)
             else:
                 pos = self.data["coords"][sample_idx]
-                pred = self.model(pos.unsqueeze(0), inputs)
+                tau_val = torch.ones(pos.shape[0], 1, device=self.device)
+                pred = self.model(pos, inputs, tau=tau_val)
 
             loss = weighted_rms_loss(pred, target)
             total_loss += loss.item()
 
-            pred_res = pred.squeeze(0) * self.res_std + self.res_mean
-            u_pred = u_in.squeeze(0) + pred_res
+            pred_res = pred * self.res_std + self.res_mean
+            u_pred = u_in + pred_res
 
-            rel_l2 = torch.sqrt(((u_pred - u_out.squeeze(0)) ** 2).sum()) / torch.sqrt(
-                (u_out.squeeze(0) ** 2).sum()
+            rel_l2 = torch.sqrt(((u_pred - u_out) ** 2).sum()) / torch.sqrt(
+                (u_out**2).sum()
             )
             total_rel_l2 += rel_l2.item()
             n += 1
@@ -540,7 +573,7 @@ class SingleStepTrainer:
         fields = self.data["fields"]
         masks = self.data["masks"]
 
-        results = {tau: [] for tau in SINGLE_STEP_EVAL_TAUS}
+        results = {t: [] for t in SINGLE_STEP_EVAL_TAUS}
 
         for sample_idx in tqdm(sample_indices, desc="AR Rollout", leave=False):
             u_t0 = torch.from_numpy(fields[(sample_idx, 0)]).to(self.device)
@@ -551,50 +584,47 @@ class SingleStepTrainer:
                 dec = self.data["decoder_nbrs"][sample_idx]
             else:
                 pos = self.data["coords"][sample_idx]
-                local_geom = self.model.get_geometry(
-                    pos, torch.zeros(pos.shape[0], dtype=torch.long, device=self.device)
-                )
+                batch_idx = torch.zeros(pos.shape[0], dtype=torch.long, device=self.device)
+                local_geom = self.model.get_geometry(pos, batch_idx)
 
-            for tau in SINGLE_STEP_EVAL_TAUS:
-                if tau > N_TIMESTEPS - 1:
+            for eval_tau in SINGLE_STEP_EVAL_TAUS:
+                if eval_tau > N_TIMESTEPS - 1:
                     continue
 
-                u_gt = torch.from_numpy(fields[(sample_idx, tau)]).to(self.device)
+                u_gt = torch.from_numpy(fields[(sample_idx, eval_tau)]).to(self.device)
                 u_curr = u_t0.clone()
 
-                for step in range(tau):
+                for step in range(eval_tau):
                     mask = torch.from_numpy(masks[(sample_idx, step)]).to(self.device)
                     u_curr_norm = (u_curr - self.u_mean) / self.u_std
-                    inputs = torch.cat(
-                        [u_curr_norm, mask.unsqueeze(-1)], dim=-1
-                    ).unsqueeze(0)
+                    inputs = torch.cat([u_curr_norm, mask.unsqueeze(-1)], dim=-1)
 
                     if self.model_type == "gaot":
                         pred = self.model(
                             self.data["latent_grid"],
                             coords_n,
-                            inputs,
+                            inputs.unsqueeze(0),
                             coords_n,
                             enc,
                             dec,
                         )
+                        pred = pred.squeeze(0)
                     else:
-                        pred = self.model.forward_with_geometry(
-                            pos, inputs.squeeze(0), local_geom
-                        )
+                        tau_val = torch.ones(pos.shape[0], 1, device=self.device)
+                        pred = self.model.forward_with_geometry(pos, inputs, local_geom, tau=tau_val)
 
-                    pred_res = pred.squeeze(0) * self.res_std + self.res_mean
+                    pred_res = pred * self.res_std + self.res_mean
                     u_curr = u_curr + pred_res
 
                 rel_l2 = (
                     torch.sqrt(((u_curr - u_gt) ** 2).sum())
                     / torch.sqrt((u_gt**2).sum())
                 ).item()
-                results[tau].append(rel_l2)
+                results[eval_tau].append(rel_l2)
 
         return {
-            tau: {"mean": np.mean(vals), "std": np.std(vals)}
-            for tau, vals in results.items()
+            t: {"mean": np.mean(vals), "std": np.std(vals)}
+            for t, vals in results.items()
             if vals
         }
 
@@ -647,45 +677,61 @@ class MultiTauTrainer:
             sample_idx = train_idx[np.random.randint(len(train_idx))]
             nc = fields[(sample_idx, 0)].shape[0]
 
-            tau = int(np.random.choice(self.train_taus))
-            t_in = np.random.randint(0, N_TIMESTEPS - self.max_tau)
-            t_out = t_in + tau
-
-            u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
-            u_out = torch.from_numpy(fields[(sample_idx, t_out)]).to(self.device)
-            mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
-
-            u_in_norm = (u_in - self.u_mean) / self.u_std
-            deriv = (u_out - u_in) / tau
-            target = (deriv - self.der_mean[tau]) / self.der_std[tau]
-
-            tau_norm = (tau - self.tau_mean) / self.tau_std
-            tau_feat = torch.full(
-                (nc, 1), tau_norm, device=self.device, dtype=torch.float32
-            )
-
-            inputs = torch.cat([u_in_norm, tau_feat, mask.unsqueeze(-1)], dim=-1)
-
-            optimizer.zero_grad()
-
             if self.model_type == "gaot":
+                taus = np.random.choice(self.train_taus, size=TIME_PAIRS_PER_FORWARD)
+                t_ins = np.random.randint(0, N_TIMESTEPS - self.max_tau, size=TIME_PAIRS_PER_FORWARD)
+
+                u_in_list, mask_list, target_list = [], [], []
+                for t_in, tau in zip(t_ins, taus):
+                    t_out = t_in + tau
+                    u_in_np = fields[(sample_idx, t_in)]
+                    u_out_np = fields[(sample_idx, t_out)]
+                    deriv = (u_out_np - u_in_np) / tau
+                    target_np = (deriv - self.der_mean[tau].cpu().numpy()) / self.der_std[tau].cpu().numpy()
+                    u_in_list.append(u_in_np)
+                    mask_list.append(masks[(sample_idx, t_in)])
+                    target_list.append(target_np)
+
+                u_in = torch.from_numpy(np.stack(u_in_list)).to(self.device)
+                mask = torch.from_numpy(np.stack(mask_list)).to(self.device)
+                target = torch.from_numpy(np.stack(target_list)).to(self.device)
+                tau_tensor = torch.tensor(taus, dtype=torch.float32, device=self.device)
+
+                u_in_norm = (u_in - self.u_mean) / self.u_std
+                tau_norm = (tau_tensor - self.tau_mean) / self.tau_std
+                tau_feat = tau_norm.view(-1, 1, 1).expand(-1, nc, 1)
+
+                inputs = torch.cat([u_in_norm, tau_feat, mask.unsqueeze(-1)], dim=-1)
+
                 coords_n = self.data["coords_norm"][sample_idx]
                 enc = self.data["encoder_nbrs"][sample_idx]
                 dec = self.data["decoder_nbrs"][sample_idx]
-                pred = self.model(
-                    self.data["latent_grid"],
-                    coords_n,
-                    inputs.unsqueeze(0),
-                    coords_n,
-                    enc,
-                    dec,
-                )
-                pred = pred.squeeze(0)
-            else:
-                pos = self.data["coords"][sample_idx]
-                pred = self.model(pos, inputs)
 
-            loss = weighted_rms_loss(pred, target)
+                optimizer.zero_grad()
+                pred = self.model(self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec)
+                loss = weighted_rms_loss(pred, target)
+            else:
+                tau_int = int(np.random.choice(self.train_taus))
+                t_in = np.random.randint(0, N_TIMESTEPS - self.max_tau)
+                t_out = t_in + tau_int
+
+                u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
+                u_out = torch.from_numpy(fields[(sample_idx, t_out)]).to(self.device)
+                mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
+
+                u_in_norm = (u_in - self.u_mean) / self.u_std
+                deriv = (u_out - u_in) / tau_int
+                target = (deriv - self.der_mean[tau_int]) / self.der_std[tau_int]
+
+                inputs = torch.cat([u_in_norm, mask.unsqueeze(-1)], dim=-1)
+
+                pos = self.data["coords"][sample_idx]
+                tau_val = torch.full((pos.shape[0], 1), float(tau_int), device=self.device)
+
+                optimizer.zero_grad()
+                pred = self.model(pos, inputs, tau=tau_val)
+                loss = weighted_rms_loss(pred, target)
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10.0)
             optimizer.step()
@@ -710,56 +756,42 @@ class MultiTauTrainer:
 
         for _ in pbar:
             sample_idx = sample_indices[np.random.randint(len(sample_indices))]
-            tau = int(np.random.choice(self.train_taus))
+            tau_int = int(np.random.choice(self.train_taus))
             t_in = np.random.randint(0, N_TIMESTEPS - self.max_tau)
-            t_out = t_in + tau
+            t_out = t_in + tau_int
             nc = fields[(sample_idx, 0)].shape[0]
 
-            u_in = (
-                torch.from_numpy(fields[(sample_idx, t_in)])
-                .unsqueeze(0)
-                .to(self.device)
-            )
-            u_out = (
-                torch.from_numpy(fields[(sample_idx, t_out)])
-                .unsqueeze(0)
-                .to(self.device)
-            )
-            mask = (
-                torch.from_numpy(masks[(sample_idx, t_in)]).unsqueeze(0).to(self.device)
-            )
+            u_in = torch.from_numpy(fields[(sample_idx, t_in)]).to(self.device)
+            u_out = torch.from_numpy(fields[(sample_idx, t_out)]).to(self.device)
+            mask = torch.from_numpy(masks[(sample_idx, t_in)]).to(self.device)
 
             u_in_norm = (u_in - self.u_mean) / self.u_std
-            deriv = (u_out - u_in) / tau
-            target = (deriv - self.der_mean[tau]) / self.der_std[tau]
-
-            tau_norm = (tau - self.tau_mean) / self.tau_std
-            tau_feat = torch.full(
-                (1, nc, 1), tau_norm, device=self.device, dtype=torch.float32
-            )
-
-            inputs = torch.cat([u_in_norm, tau_feat, mask.unsqueeze(-1)], dim=-1)
+            deriv = (u_out - u_in) / tau_int
+            target = (deriv - self.der_mean[tau_int]) / self.der_std[tau_int]
 
             if self.model_type == "gaot":
+                tau_norm = (tau_int - self.tau_mean) / self.tau_std
+                tau_feat = torch.full((1, nc, 1), tau_norm, device=self.device, dtype=torch.float32)
+                inputs = torch.cat([u_in_norm.unsqueeze(0), tau_feat, mask.unsqueeze(0).unsqueeze(-1)], dim=-1)
+
                 coords_n = self.data["coords_norm"][sample_idx]
                 enc = self.data["encoder_nbrs"][sample_idx]
                 dec = self.data["decoder_nbrs"][sample_idx]
-                pred = self.model(
-                    self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec
-                )
+                pred = self.model(self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec)
+                pred = pred.squeeze(0)
             else:
+                inputs = torch.cat([u_in_norm, mask.unsqueeze(-1)], dim=-1)
                 pos = self.data["coords"][sample_idx]
-                pred = self.model(pos.unsqueeze(0), inputs)
+                tau_val = torch.full((pos.shape[0], 1), float(tau_int), device=self.device)
+                pred = self.model(pos, inputs, tau=tau_val)
 
             loss = weighted_rms_loss(pred, target)
             total_loss += loss.item()
 
-            pred_deriv = pred.squeeze(0) * self.der_std[tau] + self.der_mean[tau]
-            u_pred = u_in.squeeze(0) + pred_deriv * tau
+            pred_deriv = pred * self.der_std[tau_int] + self.der_mean[tau_int]
+            u_pred = u_in + pred_deriv * tau_int
 
-            rel_l2 = torch.sqrt(((u_pred - u_out.squeeze(0)) ** 2).sum()) / torch.sqrt(
-                (u_out.squeeze(0) ** 2).sum()
-            )
+            rel_l2 = torch.sqrt(((u_pred - u_out) ** 2).sum()) / torch.sqrt((u_out**2).sum())
             total_rel_l2 += rel_l2.item()
             n += 1
 
@@ -772,7 +804,7 @@ class MultiTauTrainer:
         fields = self.data["fields"]
         masks = self.data["masks"]
 
-        results = {tau: [] for tau in MULTI_TAU_EVAL_TAUS}
+        results = {t: [] for t in MULTI_TAU_EVAL_TAUS}
 
         for sample_idx in tqdm(sample_indices, desc="AR Rollout", leave=False):
             nc = fields[(sample_idx, 0)].shape[0]
@@ -784,9 +816,8 @@ class MultiTauTrainer:
                 dec = self.data["decoder_nbrs"][sample_idx]
             else:
                 pos = self.data["coords"][sample_idx]
-                local_geom = self.model.get_geometry(
-                    pos, torch.zeros(pos.shape[0], dtype=torch.long, device=self.device)
-                )
+                batch_idx = torch.zeros(pos.shape[0], dtype=torch.long, device=self.device)
+                local_geom = self.model.get_geometry(pos, batch_idx)
 
             for eval_tau in MULTI_TAU_EVAL_TAUS:
                 if eval_tau > N_TIMESTEPS - 1:
@@ -798,34 +829,19 @@ class MultiTauTrainer:
                     mask = torch.from_numpy(masks[(sample_idx, 0)]).to(self.device)
                     u_curr_norm = (u_t0 - self.u_mean) / self.u_std
 
-                    tau_norm = (eval_tau - self.tau_mean) / self.tau_std
-                    tau_feat = torch.full(
-                        (1, nc, 1), tau_norm, device=self.device, dtype=torch.float32
-                    )
-
-                    inputs = torch.cat(
-                        [
-                            u_curr_norm.unsqueeze(0),
-                            tau_feat,
-                            mask.unsqueeze(0).unsqueeze(-1),
-                        ],
-                        dim=-1,
-                    )
-
                     if self.model_type == "gaot":
-                        pred = self.model(
-                            self.data["latent_grid"],
-                            coords_n,
-                            inputs,
-                            coords_n,
-                            enc,
-                            dec,
-                        )
+                        tau_norm = (eval_tau - self.tau_mean) / self.tau_std
+                        tau_feat = torch.full((1, nc, 1), tau_norm, device=self.device, dtype=torch.float32)
+                        inputs = torch.cat([u_curr_norm.unsqueeze(0), tau_feat, mask.unsqueeze(0).unsqueeze(-1)], dim=-1)
+                        pred = self.model(self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec)
+                        pred = pred.squeeze(0)
                     else:
-                        pred = self.model(pos.unsqueeze(0), inputs)
+                        inputs = torch.cat([u_curr_norm, mask.unsqueeze(-1)], dim=-1)
+                        tau_val = torch.full((pos.shape[0], 1), float(eval_tau), device=self.device)
+                        pred = self.model(pos, inputs, tau=tau_val)
 
                     dm, ds = self._get_der_stats(eval_tau)
-                    pred_deriv = pred.squeeze(0) * ds + dm
+                    pred_deriv = pred * ds + dm
                     u_pred = u_t0 + pred_deriv * eval_tau
                 else:
                     u_curr = u_t0.clone()
@@ -835,45 +851,22 @@ class MultiTauTrainer:
                     while remaining > 0:
                         step_tau = min(self.ar_step, remaining)
 
-                        mask = torch.from_numpy(masks[(sample_idx, t_curr)]).to(
-                            self.device
-                        )
+                        mask = torch.from_numpy(masks[(sample_idx, t_curr)]).to(self.device)
                         u_curr_norm = (u_curr - self.u_mean) / self.u_std
 
-                        tau_norm = (step_tau - self.tau_mean) / self.tau_std
-                        tau_feat = torch.full(
-                            (1, nc, 1),
-                            tau_norm,
-                            device=self.device,
-                            dtype=torch.float32,
-                        )
-
-                        inputs = torch.cat(
-                            [
-                                u_curr_norm.unsqueeze(0),
-                                tau_feat,
-                                mask.unsqueeze(0).unsqueeze(-1),
-                            ],
-                            dim=-1,
-                        )
-
                         if self.model_type == "gaot":
-                            pred = self.model(
-                                self.data["latent_grid"],
-                                coords_n,
-                                inputs,
-                                coords_n,
-                                enc,
-                                dec,
-                            )
+                            tau_norm = (step_tau - self.tau_mean) / self.tau_std
+                            tau_feat = torch.full((1, nc, 1), tau_norm, device=self.device, dtype=torch.float32)
+                            inputs = torch.cat([u_curr_norm.unsqueeze(0), tau_feat, mask.unsqueeze(0).unsqueeze(-1)], dim=-1)
+                            pred = self.model(self.data["latent_grid"], coords_n, inputs, coords_n, enc, dec)
+                            pred = pred.squeeze(0)
                         else:
-                            pred = self.model.forward_with_geometry(
-                                pos, inputs.squeeze(0), local_geom
-                            )
-                            pred = pred.unsqueeze(0)
+                            inputs = torch.cat([u_curr_norm, mask.unsqueeze(-1)], dim=-1)
+                            tau_val = torch.full((pos.shape[0], 1), float(step_tau), device=self.device)
+                            pred = self.model.forward_with_geometry(pos, inputs, local_geom, tau=tau_val)
 
                         dm, ds = self._get_der_stats(step_tau)
-                        pred_deriv = pred.squeeze(0) * ds + dm
+                        pred_deriv = pred * ds + dm
                         u_curr = u_curr + pred_deriv * step_tau
 
                         t_curr += step_tau
@@ -888,8 +881,8 @@ class MultiTauTrainer:
                 results[eval_tau].append(rel_l2)
 
         return {
-            tau: {"mean": np.mean(vals), "std": np.std(vals)}
-            for tau, vals in results.items()
+            t: {"mean": np.mean(vals), "std": np.std(vals)}
+            for t, vals in results.items()
             if vals
         }
 
@@ -897,9 +890,7 @@ class MultiTauTrainer:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", type=str, choices=["gaot", "boat"], default="gaot")
-    parser.add_argument(
-        "--mode", type=str, choices=["single", "multi"], default="single"
-    )
+    parser.add_argument("--mode", type=str, choices=["single", "multi"], default="single")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -921,9 +912,7 @@ def main():
     val_idx = perm[TRAIN_SIZE : TRAIN_SIZE + VAL_SIZE].tolist()
     test_idx = perm[-TEST_SIZE:].tolist()
 
-    logging.info(
-        f"Samples: train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)}"
-    )
+    logging.info(f"Samples: train={len(train_idx)}, val={len(val_idx)}, test={len(test_idx)}")
 
     if args.mode == "single":
         stats = compute_stats_single_step(VTKHDF_PATH, train_idx)
@@ -931,29 +920,29 @@ def main():
         logging.info(f"u_std: {stats['u_std']}")
         logging.info(f"res_mean: {stats['res_mean']}")
         logging.info(f"res_std: {stats['res_std']}")
-        input_size = 5
+        input_size_gaot = 5
+        input_size_boat = 5
     else:
         stats = compute_stats_multi_tau(VTKHDF_PATH, train_idx, MULTI_TAU_TRAIN_TAUS)
         logging.info(f"u_mean: {stats['u_mean']}")
         logging.info(f"u_std: {stats['u_std']}")
-        logging.info(
-            f"tau_mean: {stats['tau_mean']:.2f}, tau_std: {stats['tau_std']:.2f}"
-        )
+        logging.info(f"tau_mean: {stats['tau_mean']:.2f}, tau_std: {stats['tau_std']:.2f}")
         for tau in MULTI_TAU_TRAIN_TAUS:
-            logging.info(
-                f"  tau={tau}: der_mean={stats['der_mean'][tau]}, der_std={stats['der_std'][tau]}"
-            )
-        input_size = 6
+            logging.info(f"  tau={tau}: der_mean={stats['der_mean'][tau]}, der_std={stats['der_std'][tau]}")
+        input_size_gaot = 6
+        input_size_boat = 5
 
     all_indices = train_idx + val_idx + test_idx
 
     if args.model == "gaot":
         data = load_data_gaot(VTKHDF_PATH, NEIGHBORS_PATH, all_indices, device)
         config = build_gaot_config()
+        input_size = input_size_gaot
         model = GAOT(input_size=input_size, output_size=4, config=config).to(device)
     else:
         data = load_data_boat(VTKHDF_PATH, all_indices, device)
         config = build_boat_config()
+        input_size = input_size_boat
         model = BOAT(input_size=input_size, output_size=4, config=config).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -1025,23 +1014,15 @@ def main():
         for tau in eval_taus:
             if tau in rollout:
                 r = rollout[tau]
-                logging.info(
-                    f"{tau:<8} {r['mean'] * 100:.2f}%       {r['std'] * 100:.2f}%"
-                )
+                logging.info(f"{tau:<8} {r['mean'] * 100:.2f}%       {r['std'] * 100:.2f}%")
     else:
         logging.info(f"{'tau':<8} {'Method':<10} {'Rel L2':<12} {'Std':<12}")
         logging.info("-" * 44)
         for tau in eval_taus:
             if tau in rollout:
                 r = rollout[tau]
-                method = (
-                    "direct"
-                    if tau <= MULTI_TAU_MAX_DIRECT
-                    else f"AR({MULTI_TAU_AR_STEP})"
-                )
-                logging.info(
-                    f"{tau:<8} {method:<10} {r['mean'] * 100:.2f}%       {r['std'] * 100:.2f}%"
-                )
+                method = "direct" if tau <= MULTI_TAU_MAX_DIRECT else f"AR({MULTI_TAU_AR_STEP})"
+                logging.info(f"{tau:<8} {method:<10} {r['mean'] * 100:.2f}%       {r['std'] * 100:.2f}%")
 
     logging.info("GraphViT targets: +1=8.11%, +50=34.95%, +250=63.57%")
     logging.info(f"Finished: {datetime.now()}")
