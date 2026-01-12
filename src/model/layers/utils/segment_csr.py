@@ -11,6 +11,7 @@ import importlib
 # segment_csr
 #############
 
+
 def segment_csr(
     src: torch.Tensor,
     indptr: torch.Tensor,
@@ -26,9 +27,9 @@ def segment_csr(
     If use_scatter is set to False or torch_scatter is not
     properly built, segment_csr falls back to a naive PyTorch implementation
 
-    Note: the native version is mainly intended for running tests on 
-    CPU-only GitHub CI runners to get around a versioning issue. 
-    torch_scatter should be installed and built if possible. 
+    Note: the native version is mainly intended for running tests on
+    CPU-only GitHub CI runners to get around a versioning issue.
+    torch_scatter should be installed and built if possible.
 
     Parameters
     ----------
@@ -45,10 +46,7 @@ def segment_csr(
     if not use_scatter and reduce not in ["mean", "sum"]:
         raise ValueError("reduce must be one of 'mean', 'sum'")
 
-    if (
-        importlib.util.find_spec("torch_scatter") is not None
-        and use_scatter
-    ):
+    if importlib.util.find_spec("torch_scatter") is not None and use_scatter:
         """only import torch_scatter when cuda is available"""
         import torch_scatter.segment_csr as scatter_segment_csr
 
@@ -56,8 +54,10 @@ def segment_csr(
 
     else:
         if use_scatter:
-            print("Warning: use_scatter is True but torch_scatter is not properly built. \
-                  Defaulting to naive PyTorch implementation")
+            print(
+                "Warning: use_scatter is True but torch_scatter is not properly built. \
+                  Defaulting to naive PyTorch implementation"
+            )
         # if batched, shape [b, n_reps, channels]
         # otherwise shape [n_reps, channels]
         if src.ndim == 3:
@@ -78,16 +78,16 @@ def segment_csr(
         for i in range(n_out):
             # reduce all indices pointed to in indptr from src into out
             if batched:
-                from_idx = (slice(None), slice(indptr[0,i], indptr[0,i+1]))
-                ein_str = 'bio->bo'
-                start = indptr[0,i]
-                n_nbrs = indptr[0,i+1] - start
+                from_idx = (slice(None), slice(indptr[0, i], indptr[0, i + 1]))
+                ein_str = "bio->bo"
+                start = indptr[0, i]
+                n_nbrs = indptr[0, i + 1] - start
                 to_idx = (slice(None), i)
             else:
-                from_idx = slice(indptr[i], indptr[i+1])
-                ein_str = 'io->o'
+                from_idx = slice(indptr[i], indptr[i + 1])
+                ein_str = "io->o"
                 start = indptr[i]
-                n_nbrs = indptr[i+1] - start
+                n_nbrs = indptr[i + 1] - start
                 to_idx = i
             src_from = src[from_idx]
             if n_nbrs > 0:
@@ -96,4 +96,3 @@ def segment_csr(
                     to_reduce /= n_nbrs
                 out[to_idx] += to_reduce
         return out
-

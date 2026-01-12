@@ -2,6 +2,7 @@
 Precompute neighbors for EAGLE dataset.
 Coordinates normalized to [-1, 1], latent grid in [-1, 1].
 """
+
 import numpy as np
 import h5py
 from tqdm import tqdm
@@ -23,11 +24,18 @@ with h5py.File(VTKHDF_PATH, "r") as f:
 COORD_MIN = POINTS.min(axis=0)
 COORD_MAX = POINTS.max(axis=0)
 
-LATENT_GRID = np.stack(np.meshgrid(
-    np.linspace(-1, 1, LATENT_SIZE[0]),
-    np.linspace(-1, 1, LATENT_SIZE[1]),
-    indexing='ij'
-), axis=-1).reshape(-1, 2).astype(np.float32)
+LATENT_GRID = (
+    np.stack(
+        np.meshgrid(
+            np.linspace(-1, 1, LATENT_SIZE[0]),
+            np.linspace(-1, 1, LATENT_SIZE[1]),
+            indexing="ij",
+        ),
+        axis=-1,
+    )
+    .reshape(-1, 2)
+    .astype(np.float32)
+)
 
 
 def normalize_coords(coords):
@@ -35,14 +43,14 @@ def normalize_coords(coords):
 
 
 def compute_neighbors(i):
-    ns = NeighborSearch(method='native')
+    ns = NeighborSearch(method="native")
     start, count = OFFSETS[i], COUNTS[i]
-    coords = POINTS[start:start + count]
+    coords = POINTS[start : start + count]
     coords_norm = normalize_coords(coords)
-    
+
     coords_t = torch.from_numpy(coords_norm)
     latent_t = torch.from_numpy(LATENT_GRID)
-    
+
     enc_scales, dec_scales = [], []
     for scale in SCALES:
         r = BASE_RADIUS * scale
@@ -50,21 +58,23 @@ def compute_neighbors(i):
         dec = ns(data=latent_t, queries=coords_t, radius=r)
         enc_scales.append({k: v.numpy() for k, v in enc.items()})
         dec_scales.append({k: v.numpy() for k, v in dec.items()})
-    
+
     return i, enc_scales, dec_scales
 
 
 if __name__ == "__main__":
     n_samples = len(COUNTS)
     n_workers = min(cpu_count(), 128)
-    
+
     print(f"EAGLE Neighbor Precomputation")
     print(f"=" * 50)
     print(f"Input:        {VTKHDF_PATH}")
     print(f"Output:       {OUTPUT_PATH}")
     print(f"Samples:      {n_samples}")
     print(f"Workers:      {n_workers}")
-    print(f"Latent grid:  {LATENT_SIZE[0]}x{LATENT_SIZE[1]} = {LATENT_GRID.shape[0]} points")
+    print(
+        f"Latent grid:  {LATENT_SIZE[0]}x{LATENT_SIZE[1]} = {LATENT_GRID.shape[0]} points"
+    )
     print(f"Base radius:  {BASE_RADIUS}")
     print(f"Scales:       {SCALES}")
     print(f"Coord range:  [{COORD_MIN}] to [{COORD_MAX}]")
@@ -74,21 +84,26 @@ if __name__ == "__main__":
     decoder_nbrs = [None] * n_samples
 
     with Pool(n_workers) as pool:
-        for i, enc, dec in tqdm(pool.imap_unordered(compute_neighbors, range(n_samples)), total=n_samples):
+        for i, enc, dec in tqdm(
+            pool.imap_unordered(compute_neighbors, range(n_samples)), total=n_samples
+        ):
             encoder_nbrs[i] = enc
             decoder_nbrs[i] = dec
 
     print("\nSaving...")
-    torch.save({
-        'encoder_nbrs': encoder_nbrs,
-        'decoder_nbrs': decoder_nbrs,
-        'latent_grid': LATENT_GRID,
-        'coord_min': COORD_MIN,
-        'coord_max': COORD_MAX,
-        'scales': SCALES,
-        'base_radius': BASE_RADIUS,
-        'latent_size': LATENT_SIZE,
-    }, OUTPUT_PATH)
-    
+    torch.save(
+        {
+            "encoder_nbrs": encoder_nbrs,
+            "decoder_nbrs": decoder_nbrs,
+            "latent_grid": LATENT_GRID,
+            "coord_min": COORD_MIN,
+            "coord_max": COORD_MAX,
+            "scales": SCALES,
+            "base_radius": BASE_RADIUS,
+            "latent_size": LATENT_SIZE,
+        },
+        OUTPUT_PATH,
+    )
+
     print(f"Saved: {OUTPUT_PATH}")
     print("Done!")

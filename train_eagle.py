@@ -16,6 +16,7 @@ import os
 import json
 
 from src.model.gaot import GAOT
+
 # from src.model.boat import BOAT as GAOT
 # TODO new train script that builds, caches trees on the fly
 # TODO neighbor lists cached
@@ -1226,7 +1227,7 @@ def plot_predictions_detailed(
                 device
             )
 
-            #if lag <= 30:
+            # if lag <= 30:
             if lag == 3:
                 u_curr = u_t.clone()
                 u_curr_norm = (u_curr - u_mean) / u_std

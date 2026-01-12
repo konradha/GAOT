@@ -7,6 +7,7 @@ Key Features:
 
 Reference: https://github.com/neuraloperator/neuraloperator/blob/main/neuralop/layers/integral_transform.py
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,21 +16,22 @@ from .utils.segment_csr import segment_csr
 from .mlp import LinearChannelMLP
 from typing import Optional, Literal, Dict
 
+
 ############
 # Attentional Graph Neural Operator (AGNO)
 ############
 class AGNO(nn.Module):
     """Attentional Graph Neural Operator (AGNO)
-    
+
     An enhanced Graph Neural Operator that combines traditional kernel integral transforms
     with attention mechanisms for improved performance and regularization.
-    
+
     Computes attentionally-weighted integral transforms:
         (a) ∫_{A(x)} α(x,y) * k(x, y) dy
-        (b) ∫_{A(x)} α(x,y) * k(x, y) * f(y) dy  
+        (b) ∫_{A(x)} α(x,y) * k(x, y) * f(y) dy
         (c) ∫_{A(x)} α(x,y) * k(x, y, f(y)) dy
         (d) ∫_{A(x)} α(x,y) * k(x, y, f(y)) * f(y) dy
-    
+
     Where:
     - α(x,y) is the attention weight between query point x and neighbor y
     - A(x) is the (possibly sampled) neighborhood of x
@@ -37,10 +39,10 @@ class AGNO(nn.Module):
     - f is the input function defined on points y
 
     Key Enhancements over traditional GNO:
-    Attention Weighting (α): 
+    Attention Weighting (α):
        - Cosine similarity: α(x,y) = cos_sim(pos(x), pos(y))
        - Dot-product: α(x,y) = softmax(Q(x)·K(y) / √d)
-       
+
 
     Parameters
     ----------
@@ -71,9 +73,9 @@ class AGNO(nn.Module):
         channel_mlp_non_linearity=F.gelu,
         transform_type="linear",
         use_attn=None,
-        attention_type='cosine',
+        attention_type="cosine",
         coord_dim=None,
-        use_torch_scatter=True
+        use_torch_scatter=True,
     ):
         super().__init__()
 
@@ -85,34 +87,43 @@ class AGNO(nn.Module):
 
         # --- Validate parameters ---
         if channel_mlp is None and channel_mlp_layers is None:
-             raise ValueError("Either channel_mlp or channel_mlp_layers must be provided.")
-        if self.transform_type not in ["linear_kernelonly", "linear", "nonlinear_kernelonly", "nonlinear"]:
+            raise ValueError(
+                "Either channel_mlp or channel_mlp_layers must be provided."
+            )
+        if self.transform_type not in [
+            "linear_kernelonly",
+            "linear",
+            "nonlinear_kernelonly",
+            "nonlinear",
+        ]:
             raise ValueError(f"Invalid transform_type: {transform_type}")
         if self.use_attn:
             if coord_dim is None:
                 raise ValueError("coord_dim must be specified when use_attn is True")
-            self.coord_dim = coord_dim # Store coord_dim only if use_attn is True
-            if self.attention_type not in ['cosine', 'dot_product']:
-                 raise ValueError(f"Invalid attention_type: {self.attention_type}")
+            self.coord_dim = coord_dim  # Store coord_dim only if use_attn is True
+            if self.attention_type not in ["cosine", "dot_product"]:
+                raise ValueError(f"Invalid attention_type: {self.attention_type}")
         # Note: Edge drop validation removed - handled at encoder/decoder level
 
         # --- Initialize Modules ---
         if channel_mlp is None:
-            self.channel_mlp = LinearChannelMLP(layers=channel_mlp_layers, non_linearity=channel_mlp_non_linearity)
+            self.channel_mlp = LinearChannelMLP(
+                layers=channel_mlp_layers, non_linearity=channel_mlp_non_linearity
+            )
         else:
             self.channel_mlp = channel_mlp
 
         ## Initialize attention projection if needed
-        if self.use_attn and self.attention_type == 'dot_product':
-            attention_dim = 64 
+        if self.use_attn and self.attention_type == "dot_product":
+            attention_dim = 64
             self.query_proj = nn.Linear(self.coord_dim, attention_dim)
             self.key_proj = nn.Linear(self.coord_dim, attention_dim)
-            self.scaling_factor = 1.0 / (attention_dim ** 0.5)
+            self.scaling_factor = 1.0 / (attention_dim**0.5)
 
     def _segment_softmax(self, attention_scores, splits):
         """
         Apply segment-wise softmax for attention weight normalization.
-        
+
         Computes softmax over neighbors for each query node separately,
         ensuring attention weights sum to 1 within each neighborhood.
 
@@ -129,7 +140,7 @@ class AGNO(nn.Module):
             Normalized attention weights (sum to 1 within each neighborhood)
         """
         max_values = segment_csr(
-            attention_scores, splits, reduce='max', use_scatter=self.use_torch_scatter
+            attention_scores, splits, reduce="max", use_scatter=self.use_torch_scatter
         )
         max_values_expanded = max_values.repeat_interleave(
             splits[1:] - splits[:-1], dim=0
@@ -137,20 +148,20 @@ class AGNO(nn.Module):
         attention_scores = attention_scores - max_values_expanded
         exp_scores = torch.exp(attention_scores)
         sum_exp = segment_csr(
-            exp_scores, splits, reduce='sum', use_scatter=self.use_torch_scatter
+            exp_scores, splits, reduce="sum", use_scatter=self.use_torch_scatter
         )
-        sum_exp_expanded = sum_exp.repeat_interleave(
-            splits[1:] - splits[:-1], dim=0
-        )
+        sum_exp_expanded = sum_exp.repeat_interleave(splits[1:] - splits[:-1], dim=0)
         attention_weights = exp_scores / sum_exp_expanded
         return attention_weights
 
-    def forward(self, 
-                y: torch.Tensor, 
-                neighbors: Dict[str, torch.Tensor], 
-                x: Optional[torch.Tensor] = None, 
-                f_y: Optional[torch.Tensor] = None, 
-                weights: Optional[torch.Tensor] = None):
+    def forward(
+        self,
+        y: torch.Tensor,
+        neighbors: Dict[str, torch.Tensor],
+        x: Optional[torch.Tensor] = None,
+        f_y: Optional[torch.Tensor] = None,
+        weights: Optional[torch.Tensor] = None,
+    ):
         """Compute attentional kernel integral transform with optional edge drop
 
         Parameters
@@ -201,7 +212,7 @@ class AGNO(nn.Module):
                 in_features = f_y[neighbors_index]
             else:
                 raise ValueError(f"f_y has unexpected ndim: {f_y.ndim}")
-        
+
         # --- Prepare 'self' features ---
         num_reps = neighbors_row_splits[1:] - neighbors_row_splits[:-1]
         self_features = torch.repeat_interleave(x, num_reps, dim=0)
@@ -209,22 +220,30 @@ class AGNO(nn.Module):
         # --- Attention Logic ---
         attention_weights = None
         if self.use_attn:
-            query_coords = self_features[:, :self.coord_dim]
-            key_coords = rep_features[:, :self.coord_dim]
-            if self.attention_type == 'dot_product':
+            query_coords = self_features[:, : self.coord_dim]
+            key_coords = rep_features[:, : self.coord_dim]
+            if self.attention_type == "dot_product":
                 query = self.query_proj(query_coords)  # [num_neighbors, attention_dim]
-                key = self.key_proj(key_coords)        # [num_neighbors, attention_dim]
-                attention_scores = torch.sum(query * key, dim=-1) * self.scaling_factor  # [num_neighbors] 
-            elif self.attention_type == 'cosine':
+                key = self.key_proj(key_coords)  # [num_neighbors, attention_dim]
+                attention_scores = (
+                    torch.sum(query * key, dim=-1) * self.scaling_factor
+                )  # [num_neighbors]
+            elif self.attention_type == "cosine":
                 query_norm = F.normalize(query_coords, p=2, dim=-1)
                 key_norm = F.normalize(key_coords, p=2, dim=-1)
-                attention_scores = torch.sum(query_norm * key_norm, dim=-1)  # [num_neighbors]
+                attention_scores = torch.sum(
+                    query_norm * key_norm, dim=-1
+                )  # [num_neighbors]
             else:
-                raise ValueError(f"Invalid attention_type: {self.attention_type}. Must be 'cosine' or 'dot_product'.")
-            attention_weights = self._segment_softmax(attention_scores, neighbors_row_splits)
+                raise ValueError(
+                    f"Invalid attention_type: {self.attention_type}. Must be 'cosine' or 'dot_product'."
+                )
+            attention_weights = self._segment_softmax(
+                attention_scores, neighbors_row_splits
+            )
         else:
             attention_weights = None
-        
+
         # --- Prepare input for the kernel MLP ---
         agg_features = torch.cat([rep_features, self_features], dim=-1)
         if f_y is not None and (
@@ -239,25 +258,25 @@ class AGNO(nn.Module):
             agg_features = torch.cat([agg_features, in_features], dim=-1)
 
         # --- Apply Kernel MLP ---
-        rep_features = self.channel_mlp(agg_features) # Compute kernel values k(x,y) or k(x,y,f)
+        rep_features = self.channel_mlp(
+            agg_features
+        )  # Compute kernel values k(x,y) or k(x,y,f)
 
         # --- Apply f_y multiplication ---
         if f_y is not None and self.transform_type != "nonlinear_kernelonly":
             rep_features = rep_features * in_features
-        
+
         # --- Apply attention weights ---
         if self.use_attn:
             rep_features = rep_features * attention_weights.unsqueeze(-1)
-        
+
         # --- Apply Integration Weights ---
         if weights is not None:
             assert weights.ndim == 1, "Weights must be of dimension 1 in all cases"
             nbr_weights = weights[neighbors_index]
             # repeat weights along batch dim if batched
             if batched:
-                nbr_weights = nbr_weights.repeat(
-                    [batch_size] + [1] * nbr_weights.ndim
-                )
+                nbr_weights = nbr_weights.repeat([batch_size] + [1] * nbr_weights.ndim)
             rep_features = nbr_weights * rep_features
             reduction = "sum"
         else:
@@ -268,8 +287,8 @@ class AGNO(nn.Module):
         if batched:
             splits = splits.repeat([batch_size] + [1] * splits.ndim)
 
-        out_features = segment_csr(rep_features, splits, reduce=reduction, use_scatter=self.use_torch_scatter)
+        out_features = segment_csr(
+            rep_features, splits, reduce=reduction, use_scatter=self.use_torch_scatter
+        )
 
         return out_features
-
-

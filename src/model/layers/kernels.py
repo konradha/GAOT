@@ -1,8 +1,8 @@
-import math
 import torch
 import triton
 import triton.language as tl
-from typing import List, Tuple
+import math
+from typing import Tuple
 
 
 @triton.jit
@@ -205,7 +205,7 @@ def _partition_and_split(
     return new_starts[valid], new_ends[valid], new_batch[valid]
 
 
-def build_balltree(
+def build_balltree_triton(
     data: torch.Tensor, batch_idx: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     device = data.device
@@ -315,70 +315,17 @@ def build_balltree(
     return out_idx, out_mask
 
 
-def partition_balltree(
-    data: torch.Tensor, batch_idx: torch.Tensor, target_level: int
-) -> torch.Tensor:
-    device = data.device
-    n, dim = data.shape
-    dtype = data.dtype
-
-    if n == 0 or target_level <= 0:
-        return torch.arange(n, device=device, dtype=torch.int64)
-
-    starts, ends, counts, _, _, _, _ = _get_batch_info(batch_idx, device)
-    n_batches = starts.shape[0]
-
-    if n_batches == 0:
-        return torch.arange(n, device=device, dtype=torch.int64)
-
-    indices = torch.arange(n, device=device, dtype=torch.int64)
-    proj = torch.empty(n, device=device, dtype=dtype)
-
-    seg_starts = starts.clone()
-    seg_ends = ends.clone()
-    seg_batch = torch.arange(n_batches, device=device, dtype=torch.int64)
-
-    BLOCK = 256
-
-    for level in range(target_level):
-        n_segs = seg_starts.shape[0]
-        if n_segs == 0:
-            break
-
-        split_dims = torch.empty(n_segs, device=device, dtype=torch.int64)
-        pivots = torch.empty(n_segs, device=device, dtype=dtype)
-
-        _compute_split_kernel[(n_segs,)](
-            data,
-            indices,
-            proj,
-            split_dims,
-            pivots,
-            seg_starts,
-            seg_ends,
-            seg_batch,
-            starts,
-            n_segs,
-            dim,
-            BLOCK=BLOCK,
-        )
-
-        active = torch.ones(n_segs, device=device, dtype=torch.int32)
-        seg_starts, seg_ends, seg_batch = _partition_and_split(
-            proj, indices, seg_starts, seg_ends, seg_batch, pivots, active
-        )
-
-    return indices
-
-
 def generate_rotation_matrix(
-    angle: float, dim: int, device: torch.device
+    angle_degrees: float,
+    dim: int,
+    device: torch.device,
+    dtype: torch.dtype = torch.float32,
 ) -> torch.Tensor:
-    angle_rad = math.radians(angle)
-    c, s = math.cos(angle_rad), math.sin(angle_rad)
+    angle = math.radians(angle_degrees)
+    c, s = math.cos(angle), math.sin(angle)
 
     if dim == 2:
-        return torch.tensor([[c, -s], [s, c]], device=device, dtype=torch.float32)
+        return torch.tensor([[c, -s], [s, c]], device=device, dtype=dtype)
     elif dim == 3:
         return torch.tensor(
             [
@@ -387,55 +334,31 @@ def generate_rotation_matrix(
                 [-s, s * c, c * c],
             ],
             device=device,
-            dtype=torch.float32,
+            dtype=dtype,
         )
     else:
-        raise ValueError(f"Unsupported dimension: {dim}")
+        raise NotImplementedError(f"Rotation for dim={dim}")
 
 
 @torch.compiler.disable(recursive=False)
-def build_balltree_with_rotations(
-    data: torch.Tensor,
+def build_balltree_with_rotation(
+    pos: torch.Tensor,
     batch_idx: torch.Tensor,
-    strides: List[int],
-    ball_sizes: List[int],
-    angle: float = 45.0,
-) -> Tuple[torch.Tensor, torch.Tensor, List[torch.Tensor]]:
-    dim = data.shape[1]
-    num_layers = len(ball_sizes)
+    rotation_angle: float = 45.0,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    tree_idx, tree_mask = build_balltree_triton(pos, batch_idx)
+    perm = tree_idx[tree_mask]
+    inverse_perm = torch.argsort(perm)
 
-    tree_idx, tree_mask = build_balltree(data, batch_idx)
+    if rotation_angle <= 0:
+        return perm, inverse_perm, perm.clone(), inverse_perm.clone()
 
-    if angle <= 0:
-        return tree_idx, tree_mask, [None] * num_layers
+    dim = pos.shape[1]
+    rot_matrix = generate_rotation_matrix(rotation_angle, dim, pos.device, pos.dtype)
+    pos_rot = pos @ rot_matrix.T
 
-    leaves = data[tree_idx]
-    current_batch_idx = batch_idx[tree_idx]
+    rot_tree_idx, rot_tree_mask = build_balltree_triton(pos_rot, batch_idx)
+    rot_perm = rot_tree_idx[rot_tree_mask]
+    rot_inverse_perm = torch.argsort(rot_perm)
 
-    rotation_matrix = generate_rotation_matrix(angle, dim, data.device)
-    rotated_leaves = torch.matmul(leaves, rotation_matrix)
-
-    rot_tree_indices = []
-    for i in range(num_layers):
-        n_points = rotated_leaves.shape[0]
-        target_partitions = (
-            max(0, int(math.log2(n_points / ball_sizes[i]))) if ball_sizes[i] > 0 else 0
-        )
-
-        rot_idx = partition_balltree(
-            rotated_leaves, current_batch_idx, target_partitions
-        )
-        rot_tree_indices.append(rot_idx)
-
-        if i < num_layers - 1:
-            stride = strides[i]
-            n_coarse = rotated_leaves.shape[0] // stride
-            if n_coarse > 0:
-                rotated_leaves = (
-                    rotated_leaves[: n_coarse * stride]
-                    .view(n_coarse, stride, dim)
-                    .mean(dim=1)
-                )
-                current_batch_idx = current_batch_idx[::stride]
-
-    return tree_idx, tree_mask, rot_tree_indices
+    return perm, inverse_perm, rot_perm, rot_inverse_perm
